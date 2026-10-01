@@ -238,6 +238,7 @@ nav.tabs button[aria-selected="true"]{color:var(--fg)}
         <div class="setrow"><div class="lbl">Voice guidance<small>Speaks each turn</small></div><button class="toggle" id="voiceTg" role="switch" aria-checked="true" aria-label="Voice"></button></div>
         <div class="setrow"><div class="lbl">Keep screen awake<small>While navigating</small></div><button class="toggle" id="wakeTg" role="switch" aria-checked="true" aria-label="Keep awake"></button></div>
         <div class="setrow"><div class="lbl">Simulate my position<small>Tap the map to place yourself. For testing indoors.</small></div><button class="toggle" id="simTg" role="switch" aria-checked="false" aria-label="Simulate"></button></div>
+        <div class="setrow"><div class="lbl">Heading sensor<small id="headingDiag">Waiting for sensor events.</small></div></div>
         <div class="setrow"><div class="lbl">Compass correction<small id="biasSmall"></small></div><button class="btn small" id="resetBias">Reset</button></div>
         <div class="setrow setrow-col"><div class="lbl">Home room<small id="homeSetSmall">Not set</small></div>
           <div class="row"><input class="room compact" id="homeInput" inputmode="numeric" pattern="[0-9]*" placeholder="Room #" aria-label="Home room number" autocomplete="off"><button class="btn small primary" id="homeSave">Save</button><button class="btn small" id="clearHome" hidden>Clear</button></div></div>
@@ -494,58 +495,85 @@ function advanceDisplay(dt){
 function onPosition(){ if(dest) recompute(false); updateAll(); }
 
 // ---------- heading ----------
-// Sources in priority order: (1) device compass, (2) GPS course while walking, (3) route direction (map only).
-// Everything on screen reads displayHeading, which is eased toward the active source on the animation loop,
-// so a source change, a permission grant or a noisy sensor never makes the view jump.
+// Sources in priority order: (1) absolute compass heading, (2) relative gyro heading aligned to north by the
+// compass or by GPS course while walking, (3) GPS course / filtered velocity while moving, (4) route direction
+// (map only). Everything on screen reads displayHeading, eased toward the active source on the animation loop.
 const DECLINATION = 9.6;   // magnetic -> true north at the resort (Carefree, AZ, 2026). Phones report magnetic heading.
-let compass={h:null, ts:0}, hv=[0,0], lastEvtT=0, needsCompassPerm=false;
-let compassBias=store.get('bias',0), biasN=store.get('biasN',0);   // learned from GPS course while walking
+let compass={h:null, ts:0, n:0}, hv=[0,0], lastEvtT=0, needsCompassPerm=false;
+let rel={h:null, ts:0, n:0}, relOffset=null, relOffsetN=0, relOffsetSrc='';     // gyro heading and its offset to true north
+let compassBias=store.get('bias',0), biasN=store.get('biasN',0);                // compass error learned from GPS course
 let routeHeading=null, displayHeading=null, displaySrc='none';
 function screenAngle(){ if(screen.orientation && typeof screen.orientation.angle==='number') return screen.orientation.angle; if(typeof window.orientation==='number') return window.orientation; return 0; }
-function onOrient(e){
-  let h=null;
+function circMean(cur,n,sample,cap){ if(cur===null||n===0) return sample; const d=((sample-cur+540)%360)-180; return norm(cur+d/Math.min(n+1,cap)); }
+function handleOrientation(e){
+  const now=performance.now(); let abs=null;
   if (typeof e.webkitCompassHeading==='number' && !isNaN(e.webkitCompassHeading)){
-    if (typeof e.webkitCompassAccuracy==='number' && e.webkitCompassAccuracy<0) return;   // iOS: negative = unreliable
-    h=e.webkitCompassHeading;
-  } else if (e.absolute===true && typeof e.alpha==='number' && !isNaN(e.alpha)){ h=360-e.alpha; }
-  if (h===null) return;
-  h=norm(h+screenAngle()+DECLINATION+compassBias);
-  const now=performance.now(); const dt=lastEvtT? Math.min(0.5,(now-lastEvtT)/1000):0.1; lastEvtT=now;
-  const k=1-Math.exp(-dt/0.25);                       // time-based low-pass, 250 ms time constant
-  const a=rad(h); hv[0]+=(Math.cos(a)-hv[0])*k; hv[1]+=(Math.sin(a)-hv[1])*k;
-  compass.h=norm(deg(Math.atan2(hv[1],hv[0]))); compass.ts=now;
-  requestFrame();
+    if (!(typeof e.webkitCompassAccuracy==='number' && e.webkitCompassAccuracy<0)) abs=e.webkitCompassHeading;   // iOS
+  } else if (e.absolute===true && typeof e.alpha==='number' && !isNaN(e.alpha)) abs=360-e.alpha;              // Android absolute
+  const hasAlpha = typeof e.alpha==='number' && !isNaN(e.alpha);
+  if (hasAlpha){ rel.h=norm(360-e.alpha+screenAngle()); rel.ts=now; rel.n++; }
+  if (abs!==null){
+    const h=norm(abs+screenAngle()+DECLINATION+compassBias);
+    const dt=lastEvtT? Math.min(0.5,(now-lastEvtT)/1000):0.1; lastEvtT=now;
+    const k=1-Math.exp(-dt/0.25);                      // time-based low-pass, 250 ms time constant
+    const a=rad(h); hv[0]+=(Math.cos(a)-hv[0])*k; hv[1]+=(Math.sin(a)-hv[1])*k;
+    compass.h=norm(deg(Math.atan2(hv[1],hv[0]))); compass.ts=now; compass.n++;
+    if (hasAlpha){ relOffset=circMean(relOffset,relOffsetN,norm(compass.h-rel.h),20); relOffsetN=Math.min(relOffsetN+1,20); relOffsetSrc='compass'; }
+  }
+  requestFrame(); renderHeadingDiag();
 }
 function startOrientation(){
   const DOE=window.DeviceOrientationEvent; if(!DOE) return;
   if (typeof DOE.requestPermission==='function'){ needsCompassPerm=true; showCompassPrompt(true); return; }
-  if ('ondeviceorientationabsolute' in window) window.addEventListener('deviceorientationabsolute',onOrient); else window.addEventListener('deviceorientation',onOrient);
+  if ('ondeviceorientationabsolute' in window) window.addEventListener('deviceorientationabsolute',handleOrientation);
+  window.addEventListener('deviceorientation',handleOrientation);
 }
 function showCompassPrompt(on){ $('compassPermBtn').hidden=!on; $('compassFab').hidden=!on; }
 async function enableCompass(){
-  try{ const r=await DeviceOrientationEvent.requestPermission(); if(r==='granted'){ window.addEventListener('deviceorientation',onOrient); needsCompassPerm=false; showCompassPrompt(false); toast('Compass enabled'); } else toast('Compass permission denied'); }
+  try{ const r=await DeviceOrientationEvent.requestPermission(); if(r==='granted'){ window.addEventListener('deviceorientation',handleOrientation); needsCompassPerm=false; showCompassPrompt(false); toast('Compass enabled'); } else toast('Compass permission denied'); }
   catch(e){ toast('Compass not available'); }
 }
 $('compassPermBtn').addEventListener('click',enableCompass); $('compassFab').addEventListener('click',enableCompass);
+function courseM(){ // direction of travel while walking: GPS course, else the filtered velocity
+  if (pos && typeof pos.course==='number' && !isNaN(pos.course) && pos.speed>0.6 && Date.now()-pos.ts<8000) return {c:pos.course, sp:pos.speed};
+  if (est && Date.now()-est.ts<8000){ const sp=Math.hypot(est.v[0],est.v[1]); if (sp>0.8) return {c:bearingM([0,0],est.v), sp}; }
+  return null;
+}
 function targetHeading(){
   const now=performance.now();
   if (compass.h!==null && now-compass.ts<3000) return {h:compass.h, src:'compass'};
-  if (pos && typeof pos.course==='number' && !isNaN(pos.course) && pos.speed>0.6 && Date.now()-pos.ts<8000) return {h:pos.course, src:'gps'};
+  if (rel.h!==null && now-rel.ts<2000 && relOffset!==null) return {h:norm(rel.h+relOffset), src:'gyro'};
+  const cm=courseM(); if (cm) return {h:cm.c, src:'gps'};
   if (routeHeading!==null && dest) return {h:routeHeading, src:'route'};
   return null;
 }
-function facing(){ // a real measured facing direction (compass or movement), or null
-  return (displayHeading!==null && (displaySrc==='compass'||displaySrc==='gps')) ? {h:displayHeading, src:displaySrc} : null;
+function facing(){ // a real measured facing direction (compass, aligned gyro, or movement), or null
+  return (displayHeading!==null && displaySrc!=='route' && displaySrc!=='none') ? {h:displayHeading, src:displaySrc} : null;
 }
-function learnBias(){ // while walking with the phone held forward, GPS course tells us the compass error
-  if(!pos||compass.h===null||performance.now()-compass.ts>2000) return;
-  if(!(pos.speed>1.0)||pos.acc>20||typeof pos.course!=='number'||isNaN(pos.course)) return;
-  const raw=norm(compass.h-compassBias); const d=((pos.course-raw+540)%360)-180;
-  if (Math.abs(d)>40) return;                            // not holding the phone forward; ignore
-  biasN=Math.min(biasN+1,80); compassBias=Math.max(-25,Math.min(25, compassBias+(d-compassBias)/biasN));
-  store.set('bias',compassBias); store.set('biasN',biasN); renderBias();
+function learnBias(){ // while walking with the phone held forward, GPS course calibrates the sensors
+  const cm=courseM(); if(!cm || cm.sp<1.0 || (pos && pos.acc>20)) return;
+  const now=performance.now();
+  if (compass.h!==null && now-compass.ts<2000){
+    const raw=norm(compass.h-compassBias); const d=((cm.c-raw+540)%360)-180;
+    if (Math.abs(d)<=40){ biasN=Math.min(biasN+1,80); compassBias=Math.max(-25,Math.min(25, compassBias+(d-compassBias)/biasN)); store.set('bias',compassBias); store.set('biasN',biasN); }
+  } else if (rel.h!==null && now-rel.ts<2000){
+    relOffset=circMean(relOffset,relOffsetN,norm(cm.c-rel.h),30); relOffsetN=Math.min(relOffsetN+1,30); relOffsetSrc='gps';
+  }
+  renderBias(); renderHeadingDiag();
 }
 function renderBias(){ const el=$('biasSmall'); if(!el) return; el.textContent = biasN? `${compassBias>=0?'+':''}${compassBias.toFixed(1)}° learned from ${biasN} walking fixes (plus ${DECLINATION}° declination)` : `None learned yet (declination ${DECLINATION}° applied)`; }
+let _diagT=0;
+function renderHeadingDiag(){
+  const el=$('headingDiag'); if(!el) return; const now=performance.now(); if (now-_diagT<500) return; _diagT=now;
+  let t;
+  if (compass.n && now-compass.ts<3000) t=`Compass: ${Math.round(compass.h)}°, ${compass.n} readings`;
+  else if (rel.n && now-rel.ts<3000) t= relOffset!==null ? `Gyro aligned by ${relOffsetSrc} (offset ${Math.round(relOffset)}°), ${rel.n} readings` : `Gyro only (${rel.n} readings): no compass on this phone. Walk 20 m with the phone held forward to align it.`;
+  else if (needsCompassPerm) t='Compass needs permission. Tap "Enable compass" on the Arrow or Navigate screen.';
+  else t='No orientation sensor events yet. Check that motion sensors are allowed for this site.';
+  const cm=courseM(); if (cm) t+=` · moving ${cm.sp.toFixed(1)} m/s toward ${Math.round(cm.c)}°`;
+  t+=` · showing ${displaySrc}`;
+  el.textContent=t;
+}
 
 // ---------- animation loop ----------
 let rafId=null, lastFrameT=0;
@@ -559,7 +587,7 @@ function frame(now){
   else displaySrc='none';
   if (advanceDisplay(dt) && dest) busy=true;          // dead reckoning moves every frame while navigating
   if (animateView(dt)) busy=true;
-  if (now-lastRender>=28 || !busy){ lastRender=now; drawMap(); updateArrow(); if(dest) updateBanner(); }
+  if (now-lastRender>=28 || !busy){ lastRender=now; drawMap(); updateArrow(); if(dest) updateBanner(); if(!$('pane-set').hidden) renderHeadingDiag(); }
   if (busy && document.visibilityState==='visible') requestFrame();
 }
 document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible') requestFrame(); });
@@ -654,7 +682,7 @@ function updateArrow(){
   else if (mode==='rel'){ $('aTurn').textContent=`Head ${cardinal}`; }
   else { $('aTurn').textContent=`Head ${cardinal} (${Math.round(b)}°)`; }
   $('aSub').textContent = s && s.type!=='arrive' ? `Next: ${s.text.toLowerCase()} in ${sv} ${su}` : `Destination ${sv} ${su} ahead along the path`;
-  if (mode==='rel' && !compassOk) $('aSub').textContent += needsCompassPerm?' · tap “Enable compass”':' · no compass yet: start walking and the arrow follows your movement';
+  if (mode==='rel' && !compassOk) $('aSub').textContent += needsCompassPerm?' · tap “Enable compass”':' · no heading yet: walk a few steps with the phone held forward';
 }
 
 // ---------- map canvas (follows user, heading-up, everything eased) ----------
@@ -741,7 +769,7 @@ document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==
 renderHome(); renderRecent(); renderCalib(); renderBias(); updateBanner(); updateArrow();
 startGeo(); startOrientation();
 if (home && DATA.rooms[home]) $('roomInput').value=home;
-window.__bnn={DATA, roomPos, placePos, setDest, goRoom, showPane, buildRoute, snapToGraph, setPos, get route(){return route;}, get prog(){return prog;}, get pos(){return pos;}, setHeading(h){ compass.h=h; compass.ts=performance.now(); requestFrame(); }, get heading(){ return {displayHeading, displaySrc, compassBias}; }, tick(ms){ frame(ms===undefined?performance.now():ms); }, mToImg, get imgReady(){ return imgReady; }, get canvasSize(){ return [canvas.width, canvas.height, dpr]; }, get disp(){ return {dispM, dispProg, est}; }, get dbg(){ return {compass:{...compass}, target:targetHeading(), now:performance.now(), rafId, follow, view:{...view}, goal:{...goal}}; }};
+window.__bnn={DATA, roomPos, placePos, setDest, goRoom, showPane, buildRoute, snapToGraph, setPos, get route(){return route;}, get prog(){return prog;}, get pos(){return pos;}, setHeading(h){ compass.h=h; compass.ts=performance.now(); compass.n++; requestFrame(); }, handleOrientation, get sensors(){ return {compass:{...compass}, rel:{...rel}, relOffset, relOffsetSrc}; }, get heading(){ return {displayHeading, displaySrc, compassBias}; }, tick(ms){ frame(ms===undefined?performance.now():ms); }, mToImg, get imgReady(){ return imgReady; }, get canvasSize(){ return [canvas.width, canvas.height, dpr]; }, get disp(){ return {dispM, dispProg, est}; }, get dbg(){ return {compass:{...compass}, target:targetHeading(), now:performance.now(), rafId, follow, view:{...view}, goal:{...goal}}; }};
 })();
 </script>
 </body>
