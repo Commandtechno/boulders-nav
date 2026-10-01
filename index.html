@@ -182,6 +182,7 @@ nav.tabs button[aria-selected="true"]{color:var(--accent);background:var(--panel
         </div>
       </div>
       <div class="fabs">
+        <button class="fab" id="compassFab" title="Enable compass" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/></svg></button>
         <button class="fab" id="headTg" title="Rotate map with heading" aria-pressed="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l6 18-6-4-6 4z"/></svg></button>
         <button class="fab" id="zIn" aria-label="Zoom in">+</button>
         <button class="fab" id="zOut" aria-label="Zoom out">−</button>
@@ -244,6 +245,7 @@ nav.tabs button[aria-selected="true"]{color:var(--accent);background:var(--panel
         <div class="setrow"><div class="lbl">Voice guidance<small>Speaks each turn</small></div><button class="toggle" id="voiceTg" role="switch" aria-checked="true" aria-label="Voice"></button></div>
         <div class="setrow"><div class="lbl">Keep screen awake<small>While navigating</small></div><button class="toggle" id="wakeTg" role="switch" aria-checked="true" aria-label="Keep awake"></button></div>
         <div class="setrow"><div class="lbl">Simulate my position<small>Tap the map to place yourself. For testing indoors.</small></div><button class="toggle" id="simTg" role="switch" aria-checked="false" aria-label="Simulate"></button></div>
+        <div class="setrow"><div class="lbl">Compass correction<small id="biasSmall"></small></div><button class="btn small" id="resetBias">Reset</button></div>
         <div class="setrow"><div class="lbl">Home room<small id="homeSetSmall">Not set</small></div><button class="btn small" id="clearHome">Clear</button></div>
         <div class="setrow"><div class="lbl">Pinned rooms<small>Rooms whose position you corrected with GPS</small></div><button class="btn small" id="clearCalib">Clear all</button></div>
         <div class="calib-list" id="calibList"></div>
@@ -393,7 +395,8 @@ function fmtDistSpeech(m){ if(units==='ft'){ const ft=Math.round(m*3.28084/10)*1
 function showPane(name){
   document.querySelectorAll('.pane').forEach(p=>p.hidden=p.id!=='pane-'+name);
   document.querySelectorAll('nav.tabs button').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.pane===name)));
-  if(name==='nav') requestAnimationFrame(()=>{ resizeMap(); drawMap(); });
+  if(name==='nav'){ resizeMap(); requestFrame(); }
+  if(name==='arrow') requestFrame();
 }
 document.querySelectorAll('nav.tabs button').forEach(b=>b.addEventListener('click',()=>showPane(b.dataset.pane)));
 $('emptyGo').addEventListener('click',()=>showPane('go'));
@@ -412,10 +415,8 @@ function pushRecent(r){ recent=[r,...recent.filter(x=>x!==r)].slice(0,8); store.
 function setDest(d){
   dest=d; route=null; prog=null; offCount=0; spoken={}; lastRouteFrom=null;
   $('targetName').textContent=d.label; $('navEmpty').hidden=true;
-  follow=true; $('recenter').hidden=true;
-  showPane('nav'); recompute(true); updateAll();
+  showPane('nav'); recompute(true); setFollow(true); updateAll();
   if(keepAwake) requestWake();
-  if(needsCompassPerm) $('compassPermBtn').hidden=false;
 }
 function goRoom(r){
   r=String(r||'').trim(); const err=$('roomErr');
@@ -434,6 +435,7 @@ $('stopBtn').addEventListener('click',()=>{ dest=null; route=null; prog=null; sp
 $('toMapBtn').addEventListener('click',()=>showPane('nav'));
 $('clearHome').addEventListener('click',()=>{ home=null; store.del('home'); renderHome(); toast('Home cleared'); });
 $('clearCalib').addEventListener('click',()=>{ calib={}; store.set('calib',calib); renderCalib(); renderHome(); toast('Pinned rooms cleared'); });
+$('resetBias').addEventListener('click',()=>{ compassBias=0; biasN=0; store.set('bias',0); store.set('biasN',0); renderBias(); toast('Compass correction reset'); });
 
 // ---------- pin a room to current GPS ----------
 $('calibBtn').addEventListener('click',()=>{
@@ -463,53 +465,129 @@ function startGeo(){
   if(watchId!==null) navigator.geolocation.clearWatch(watchId);
   watchId=navigator.geolocation.watchPosition(p=>{ if(simulate) return;
     setPos({lat:p.coords.latitude, lon:p.coords.longitude, acc:p.coords.accuracy||50, speed:p.coords.speed, course:p.coords.heading, ts:p.timestamp});
-    setGpsChip(pos.acc<=20?'ok':'wait',`GPS ±${Math.round(pos.acc)} m`);
+    const accM=est?Math.sqrt(est.var):pos.acc; setGpsChip(accM<=20?'ok':'wait',`GPS ±${Math.round(accM)} m`);
   }, err=>{ setGpsChip('bad', err.code===1?'Location blocked. Allow it in browser settings.': err.code===2?'Position unavailable':'GPS timeout, retrying…'); if(err.code!==1) setTimeout(startGeo,4000); },
-  {enableHighAccuracy:true, maximumAge:1000, timeout:20000});
+  {enableHighAccuracy:true, maximumAge:0, timeout:20000});
 }
-function setPos(p){ pos=p; posM=ll2m(p.lat,p.lon); onPosition(); }
+// Position filter: a small Kalman filter on each fix (weights fixes by their accuracy, rejects outliers),
+// a velocity estimate for dead reckoning between the ~1 Hz fixes, and an eased display position that is
+// snapped onto the route when within a few metres. Routing decisions use the filtered fix (posM); everything
+// drawn uses the display position (dispM), which glides at frame rate.
+let est=null, dispM=null, dispProg=null;
+function kalman(p){
+  const z=ll2m(p.lat,p.lon); const t=p.ts||Date.now(); const R=Math.max(3,Math.min(p.acc||30,60))**2;
+  if(!est || t<est.ts){ est={m:z.slice(), v:[0,0], var:R, ts:t, bad:0}; return; }
+  const dt=Math.min(10,Math.max(0.05,(t-est.ts)/1000));
+  const pm=[est.m[0]+est.v[0]*dt, est.m[1]+est.v[1]*dt]; const pv=est.var + 1.3*dt*dt + 1.0*dt;   // walking process noise
+  const inn=[z[0]-pm[0], z[1]-pm[1]]; const innD=Math.hypot(inn[0],inn[1]); const gate=3*Math.sqrt(pv+R)+10;
+  if (innD>gate){ est.bad++; if(est.bad<3){ est.ts=t; return; } est={m:z.slice(), v:[0,0], var:R, ts:t, bad:0}; return; }   // outlier unless it persists
+  const K=pv/(pv+R); const nm=[pm[0]+K*inn[0], pm[1]+K*inn[1]];
+  const rawV=[(nm[0]-est.m[0])/dt,(nm[1]-est.m[1])/dt]; const a=0.45;
+  let v=[est.v[0]+(rawV[0]-est.v[0])*a, est.v[1]+(rawV[1]-est.v[1])*a]; const vs=Math.hypot(v[0],v[1]); if(vs>2.5) v=[v[0]*2.5/vs, v[1]*2.5/vs];
+  if (typeof p.speed==='number' && p.speed!==null && !isNaN(p.speed) && p.speed<0.3) v=[v[0]*0.3, v[1]*0.3];   // GPS says we're standing still
+  est={m:nm, v, var:(1-K)*pv, ts:t, bad:0};
+}
+function setPos(p){ pos=p; kalman(p); posM=est.m.slice(); learnBias(); onPosition(); }
+function predictedM(){ if(!est) return null; const since=Math.max(0,Math.min(2.5,(Date.now()-est.ts)/1000)); return [est.m[0]+est.v[0]*since, est.m[1]+est.v[1]*since]; }
+function advanceDisplay(dt){
+  let tgt=predictedM(); if(!tgt) return false;
+  if (route){ const pr=projectOnRoute(route, tgt, dispProg?dispProg.i:null); if (pr.d<14){ const w = pr.d<6 ? 1 : (14-pr.d)/8; tgt=[tgt[0]+(pr.P[0]-tgt[0])*w, tgt[1]+(pr.P[1]-tgt[1])*w]; } }
+  if (!dispM || dM(dispM,tgt)>80) dispM=tgt; else { dispM=[ease(dispM[0],tgt[0],dt,0.4), ease(dispM[1],tgt[1],dt,0.4)]; }
+  dispProg = route ? projectOnRoute(route, dispM, dispProg?dispProg.i:null) : null;
+  prog = dispProg;
+  return true;
+}
 function onPosition(){ if(dest) recompute(false); updateAll(); }
 
 // ---------- heading ----------
-let heading=null, headingSrc='none', needsCompassPerm=false, hv=[0,0];
-function smoothHeading(h){ const a=rad(h); hv[0]=hv[0]*0.7+Math.cos(a)*0.3; hv[1]=hv[1]*0.7+Math.sin(a)*0.3; return norm(deg(Math.atan2(hv[1],hv[0]))); }
+// Sources in priority order: (1) device compass, (2) GPS course while walking, (3) route direction (map only).
+// Everything on screen reads displayHeading, which is eased toward the active source on the animation loop,
+// so a source change, a permission grant or a noisy sensor never makes the view jump.
+const DECLINATION = 9.6;   // magnetic -> true north at the resort (Carefree, AZ, 2026). Phones report magnetic heading.
+let compass={h:null, ts:0}, hv=[0,0], lastEvtT=0, needsCompassPerm=false;
+let compassBias=store.get('bias',0), biasN=store.get('biasN',0);   // learned from GPS course while walking
+let routeHeading=null, displayHeading=null, displaySrc='none';
+function screenAngle(){ if(screen.orientation && typeof screen.orientation.angle==='number') return screen.orientation.angle; if(typeof window.orientation==='number') return window.orientation; return 0; }
 function onOrient(e){
   let h=null;
-  if (typeof e.webkitCompassHeading==='number' && !isNaN(e.webkitCompassHeading)) h=e.webkitCompassHeading;
-  else if (e.absolute===true && typeof e.alpha==='number'){ h=norm(360-e.alpha); const so=(screen.orientation&&typeof screen.orientation.angle==='number')?screen.orientation.angle:(window.orientation||0); h=norm(h+so); }
-  if (h!==null){ heading=smoothHeading(h); headingSrc='compass'; updateAll(); }
+  if (typeof e.webkitCompassHeading==='number' && !isNaN(e.webkitCompassHeading)){
+    if (typeof e.webkitCompassAccuracy==='number' && e.webkitCompassAccuracy<0) return;   // iOS: negative = unreliable
+    h=e.webkitCompassHeading;
+  } else if (e.absolute===true && typeof e.alpha==='number' && !isNaN(e.alpha)){ h=360-e.alpha; }
+  if (h===null) return;
+  h=norm(h+screenAngle()+DECLINATION+compassBias);
+  const now=performance.now(); const dt=lastEvtT? Math.min(0.5,(now-lastEvtT)/1000):0.1; lastEvtT=now;
+  const k=1-Math.exp(-dt/0.25);                       // time-based low-pass, 250 ms time constant
+  const a=rad(h); hv[0]+=(Math.cos(a)-hv[0])*k; hv[1]+=(Math.sin(a)-hv[1])*k;
+  compass.h=norm(deg(Math.atan2(hv[1],hv[0]))); compass.ts=now;
+  requestFrame();
 }
 function startOrientation(){
   const DOE=window.DeviceOrientationEvent; if(!DOE) return;
-  if (typeof DOE.requestPermission==='function'){ needsCompassPerm=true; $('compassPermBtn').hidden=false; return; }
+  if (typeof DOE.requestPermission==='function'){ needsCompassPerm=true; showCompassPrompt(true); return; }
   if ('ondeviceorientationabsolute' in window) window.addEventListener('deviceorientationabsolute',onOrient); else window.addEventListener('deviceorientation',onOrient);
 }
-$('compassPermBtn').addEventListener('click',async()=>{ try{ const r=await DeviceOrientationEvent.requestPermission(); if(r==='granted'){ window.addEventListener('deviceorientation',onOrient); needsCompassPerm=false; $('compassPermBtn').hidden=true; toast('Compass enabled'); } else toast('Compass permission denied'); }catch(e){ toast('Compass not available'); } });
-function effectiveHeading(){
-  if (heading!==null && headingSrc==='compass') return {h:heading, src:'compass'};
-  if (pos && typeof pos.course==='number' && !isNaN(pos.course) && pos.speed>0.6) return {h:pos.course, src:'gps'};
-  if (routeHeading!==null) return {h:routeHeading, src:'route'};
+function showCompassPrompt(on){ $('compassPermBtn').hidden=!on; $('compassFab').hidden=!on; }
+async function enableCompass(){
+  try{ const r=await DeviceOrientationEvent.requestPermission(); if(r==='granted'){ window.addEventListener('deviceorientation',onOrient); needsCompassPerm=false; showCompassPrompt(false); toast('Compass enabled'); } else toast('Compass permission denied'); }
+  catch(e){ toast('Compass not available'); }
+}
+$('compassPermBtn').addEventListener('click',enableCompass); $('compassFab').addEventListener('click',enableCompass);
+function targetHeading(){
+  const now=performance.now();
+  if (compass.h!==null && now-compass.ts<3000) return {h:compass.h, src:'compass'};
+  if (pos && typeof pos.course==='number' && !isNaN(pos.course) && pos.speed>0.6 && Date.now()-pos.ts<8000) return {h:pos.course, src:'gps'};
+  if (routeHeading!==null && dest) return {h:routeHeading, src:'route'};
   return null;
 }
-let routeHeading=null; // direction of the route at the user's position, used to orient the map when no compass
+function facing(){ // a real measured facing direction (compass or movement), or null
+  return (displayHeading!==null && (displaySrc==='compass'||displaySrc==='gps')) ? {h:displayHeading, src:displaySrc} : null;
+}
+function learnBias(){ // while walking with the phone held forward, GPS course tells us the compass error
+  if(!pos||compass.h===null||performance.now()-compass.ts>2000) return;
+  if(!(pos.speed>1.0)||pos.acc>20||typeof pos.course!=='number'||isNaN(pos.course)) return;
+  const raw=norm(compass.h-compassBias); const d=((pos.course-raw+540)%360)-180;
+  if (Math.abs(d)>40) return;                            // not holding the phone forward; ignore
+  biasN=Math.min(biasN+1,80); compassBias=Math.max(-25,Math.min(25, compassBias+(d-compassBias)/biasN));
+  store.set('bias',compassBias); store.set('biasN',biasN); renderBias();
+}
+function renderBias(){ const el=$('biasSmall'); if(!el) return; el.textContent = biasN? `${compassBias>=0?'+':''}${compassBias.toFixed(1)}° learned from ${biasN} walking fixes (plus ${DECLINATION}° declination)` : `None learned yet (declination ${DECLINATION}° applied)`; }
+
+// ---------- animation loop ----------
+let rafId=null, lastFrameT=0;
+function requestFrame(){ if(rafId===null) rafId=requestAnimationFrame(frame); }
+function ease(cur,target,dt,tau){ return cur+(target-cur)*(1-Math.exp(-dt/tau)); }
+let lastRender=0;
+function frame(now){
+  rafId=null; const dt=lastFrameT? Math.min(0.1,(now-lastFrameT)/1000):0.016; lastFrameT=now; let busy=false;
+  const t=targetHeading();
+  if (t){ if (displayHeading===null) displayHeading=t.h; else { const d=((t.h-displayHeading+540)%360)-180; displayHeading=norm(ease(displayHeading, displayHeading+d, dt, 0.2)); if (Math.abs(d)>0.2) busy=true; } displaySrc=t.src; }
+  else displaySrc='none';
+  if (advanceDisplay(dt) && dest) busy=true;          // dead reckoning moves every frame while navigating
+  if (animateView(dt)) busy=true;
+  if (now-lastRender>=28 || !busy){ lastRender=now; drawMap(); updateArrow(); if(dest) updateBanner(); }
+  if (busy && document.visibilityState==='visible') requestFrame();
+}
+document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible') requestFrame(); });
 
 // ---------- routing state machine ----------
 function recompute(force){
   if(!dest||!posM) return;
   const needs = force || !route || !lastRouteFrom || offCount>=2;
   if (needs){
-    route=buildRoute(posM, dest.node, dest.finalM); lastRouteFrom=posM; offCount=0; prog=null;
+    route=buildRoute(posM, dest.node, dest.finalM); lastRouteFrom=posM; offCount=0; dispProg=null; prog=null;
     if(!route){ toast('No path found; pointing straight there'); route=finishRoute([posM, dest.finalM||dest.nodeM], 0); }
     else if(!force){ say('Rerouting'); }
     spoken={};
+    prog=projectOnRoute(route, posM, null); dispProg=prog;
     if (force) announceStart();
   }
-  prog=projectOnRoute(route, posM, prog? prog.i : null);
-  if (prog.d>30) offCount++; else offCount=0;
-  if (prog.i<route.pts.length-1){ routeHeading=bearingM(route.pts[prog.i], route.pts[prog.i+1]); }
+  const fp=projectOnRoute(route, posM, prog? prog.i : null);
+  if (fp.d>30) offCount++; else offCount=0;
+  if (fp.i<route.pts.length-1) routeHeading=bearingM(route.pts[fp.i], route.pts[fp.i+1]);
 }
 function remainingM(){ return route&&prog ? Math.max(0, route.total-prog.along) : null; }
-function straightToDest(){ const t=dest.finalM||dest.nodeM; return dM(posM,t); }
+function straightToDest(){ const t=dest.finalM||dest.nodeM; return dM(dispM||posM,t); }
 function nextStep(){ if(!route||!prog) return null; return route.steps.find(s=> s.at > prog.along+3 ) || route.steps[route.steps.length-1]; }
 function stepAfter(s){ if(!route) return null; const i=route.steps.indexOf(s); return i>=0 && i<route.steps.length-1 ? route.steps[i+1] : null; }
 function arrived(){ return dest&&posM && (straightToDest()<12 || (remainingM()!==null && remainingM()<10)); }
@@ -536,7 +614,9 @@ const ICONS={
 function setIcon(el,type){ el.innerHTML=ICONS[type]||ICONS.straight; }
 
 // ---------- update everything ----------
-function updateAll(){ updateBanner(); updateArrow(); drawMap(); voiceTick(); }
+function updateAll(){ updateBanner(); voiceTick(); requestFrame(); }
+const _bc={};
+function setT(id,html,isHtml){ if(_bc[id]===html) return; _bc[id]=html; const el=$(id); if(isHtml) el.innerHTML=html; else el.textContent=html; }
 function updateBanner(){
   const b=$('banner'); b.className='banner';
   if(!dest){ b.classList.add('wait'); setIcon($('manIcon'),'wait'); $('bDist').textContent='—'; $('bInstr').textContent='Pick a destination'; $('bThen').hidden=true; $('remain').textContent='—'; $('eta').textContent=''; return; }
@@ -554,8 +634,8 @@ function updateBanner(){
   const n=stepAfter(s); const th=$('bThen');
   if (n && s.type!=='arrive'){ th.hidden=false; th.innerHTML=`Then <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">${ICONS[n.type]||ICONS.straight}</svg> ${n.type==='arrive'?'arrive':n.text.toLowerCase()}`; } else th.hidden=true;
 }
-$('modeRel').addEventListener('click',()=>{ mode='rel'; store.set('mode',mode); updateArrow(); });
-$('modeFix').addEventListener('click',()=>{ mode='fix'; store.set('mode',mode); updateArrow(); });
+$('modeRel').addEventListener('click',()=>{ mode='rel'; store.set('mode',mode); requestFrame(); });
+$('modeFix').addEventListener('click',()=>{ mode='fix'; store.set('mode',mode); requestFrame(); });
 (function ticks(){ let s=''; for(let i=0;i<72;i++){ const maj=i%18===0, mid=i%6===0; const l=maj?14:mid?9:5; s+=`<line x1="0" y1="-100" x2="0" y2="${-100+l}" stroke="${maj?'var(--fg)':'var(--line)'}" stroke-width="${maj?3:2}" transform="rotate(${i*5})"/>`; } $('ticks').innerHTML=s; })();
 function waypointM(){ // point on the route ~15 m ahead of the user (or the destination)
   if(!route||!prog) return dest? (dest.finalM||dest.nodeM) : null;
@@ -566,9 +646,9 @@ function updateArrow(){
   $('modeRel').setAttribute('aria-pressed',String(mode==='rel')); $('modeFix').setAttribute('aria-pressed',String(mode==='fix'));
   if(!dest){ $('aDist').textContent='—'; $('aTurn').textContent='No destination'; $('aSub').textContent=''; return; }
   if(!posM){ $('aDist').textContent='—'; $('aTurn').textContent='Waiting for GPS…'; $('aSub').textContent='Step outside with a clear view of the sky.'; return; }
-  const wp=waypointM(); const b=bearingM(posM,wp); const rem=remainingM(); const [v,u]=fmtDist(rem);
+  const uM=dispM||posM; const wp=waypointM(); const b=bearingM(uM,wp); const rem=remainingM(); const [v,u]=fmtDist(rem);
   $('aDist').innerHTML=`${v}<small>${u}</small>`;
-  const eh=effectiveHeading(); const compassOk = eh && eh.src!=='route';
+  const eh=facing(); const compassOk=!!eh;
   let roseRot=0, arrowRot=b;
   if (mode==='rel' && compassOk){ roseRot=-eh.h; arrowRot=b-eh.h; }
   $('rose').setAttribute('transform',`rotate(${roseRot})`); $('arrow').setAttribute('transform',`rotate(${arrowRot})`);
@@ -580,74 +660,74 @@ function updateArrow(){
   else if (mode==='rel'){ $('aTurn').textContent=`Head ${cardinal}`; }
   else { $('aTurn').textContent=`Head ${cardinal} (${Math.round(b)}°)`; }
   $('aSub').textContent = s && s.type!=='arrive' ? `Next: ${s.text.toLowerCase()} in ${sv} ${su}` : `Destination ${sv} ${su} ahead along the path`;
-  if (mode==='rel' && !compassOk) $('aSub').textContent += needsCompassPerm?' · tap “Enable compass”':' · no compass, arrow uses your movement';
+  if (mode==='rel' && !compassOk) $('aSub').textContent += needsCompassPerm?' · tap “Enable compass”':' · no compass yet: start walking and the arrow follows your movement';
 }
 
-// ---------- map canvas (follows user, heading-up) ----------
+// ---------- map canvas (follows user, heading-up, everything eased) ----------
 const canvas=$('mapc'), ctx=canvas.getContext('2d');
-const img=new Image(); let imgReady=false; img.onload=()=>{ imgReady=true; resizeMap(); drawMap(); }; img.src=MAP_SRC;
+const img=new Image(); let imgReady=false; img.onload=()=>{ imgReady=true; resizeMap(); requestFrame(); }; img.src=MAP_SRC;
 let dpr=1, follow=true;
-let view={s:1.1, cx:1400, cy:1100, rot:0}; // focus point in image px, scale (screen px per image px), rotation (rad)
+let view={s:1.1, cx:1400, cy:1100, rot:0};          // what is drawn: focus point (image px), scale, rotation (rad)
+let goal={s:1.1, cx:1400, cy:1100, rot:0};          // where the view is heading; frame() eases view toward goal
 function resizeMap(){ const r=canvas.parentElement.getBoundingClientRect(); dpr=window.devicePixelRatio||1; canvas.width=Math.round(r.width*dpr); canvas.height=Math.round(r.height*dpr); }
 function cssSize(){ return [canvas.width/dpr, canvas.height/dpr]; }
-function anchor(){ const [W,H]=cssSize(); return follow&&dest ? [W/2, H*0.62] : [W/2, H/2]; }
+function anchor(){ const [W,H]=cssSize(); return dest ? [W/2, H*0.6] : [W/2, H/2]; }
 function imgToScreen(p){ const [ax,ay]=anchor(); const dx=(p[0]-view.cx)*view.s, dy=(p[1]-view.cy)*view.s; const c=Math.cos(view.rot), s=Math.sin(view.rot); return [ax+dx*c-dy*s, ay+dx*s+dy*c]; }
 function screenToImg(q){ const [ax,ay]=anchor(); const x=q[0]-ax, y=q[1]-ay; const c=Math.cos(-view.rot), s=Math.sin(-view.rot); const dx=x*c-y*s, dy=x*s+y*c; return [view.cx+dx/view.s, view.cy+dy/view.s]; }
+function animateView(dt){
+  if (follow){
+    const uM=dispM||posM; const uImg = uM ? mToImg(uM) : null;
+    if (uImg){ goal.cx=uImg[0]; goal.cy=uImg[1]; }
+    else if (dest){ const d=mToImg(dest.finalM||dest.nodeM); goal.cx=d[0]; goal.cy=d[1]; }
+    goal.rot = (headingUp && dest && displayHeading!==null) ? -rad(displayHeading) : 0;
+  }
+  // position and scale ease; rotation eases along the shortest arc
+  let busy=false;
+  const dcx=goal.cx-view.cx, dcy=goal.cy-view.cy; if (Math.hypot(dcx,dcy)*view.s>0.3){ view.cx=ease(view.cx,goal.cx,dt,0.25); view.cy=ease(view.cy,goal.cy,dt,0.25); busy=true; } else { view.cx=goal.cx; view.cy=goal.cy; }
+  if (Math.abs(goal.s-view.s)>0.001){ view.s=ease(view.s,goal.s,dt,0.15); busy=true; } else view.s=goal.s;
+  let dr=goal.rot-view.rot; dr=Math.atan2(Math.sin(dr),Math.cos(dr));
+  if (Math.abs(dr)>0.002){ view.rot=ease(view.rot,view.rot+dr,dt,0.25); busy=true; } else view.rot=goal.rot;
+  view.rot=Math.atan2(Math.sin(view.rot),Math.cos(view.rot));   // keep in (-pi, pi]; same picture, no unbounded growth
+  return busy;
+}
 function drawMap(){
   if(!imgReady || $('pane-nav').hidden) return;
   const [W,H]=cssSize(); ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,W,H); ctx.fillStyle='#efe6cf'; ctx.fillRect(0,0,W,H);
-  const uImg = posM ? mToImg(posM) : null;
-  if (follow && dest && uImg){ view.cx=uImg[0]; view.cy=uImg[1]; const eh=effectiveHeading(); view.rot = (headingUp && eh) ? -rad(eh.h) : 0; }
-  else if (follow && !uImg && dest){ const d=mToImg(dest.finalM||dest.nodeM); view.cx=d[0]; view.cy=d[1]; view.rot=0; }
+  const uM=dispM||posM; const uImg = uM ? mToImg(uM) : null;
   const [ax,ay]=anchor();
   ctx.save(); ctx.translate(ax,ay); ctx.rotate(view.rot); ctx.scale(view.s,view.s); ctx.translate(-view.cx,-view.cy); ctx.imageSmoothingQuality='high'; ctx.drawImage(img,0,0); ctx.restore();
-  // route
   if (route){
     const pts=route.pts.map(m=>imgToScreen(mToImg(m)));
-    const split = prog ? prog.i : -1;
     ctx.lineCap='round'; ctx.lineJoin='round';
-    const drawSeg=(from,to,color,w)=>{ if(to<=from) return; ctx.strokeStyle=color; ctx.lineWidth=w; ctx.beginPath(); ctx.moveTo(pts[from][0],pts[from][1]); for(let i=from+1;i<=to;i++) ctx.lineTo(pts[i][0],pts[i][1]); ctx.stroke(); };
     ctx.strokeStyle='rgba(255,255,255,.9)'; ctx.lineWidth=12; ctx.beginPath(); pts.forEach((p,i)=> i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1])); ctx.stroke();
-    if (prog){ const P=imgToScreen(mToImg(prog.P)); drawSeg(0,split,'rgba(120,130,140,.9)',7); ctx.strokeStyle='rgba(120,130,140,.9)'; ctx.beginPath(); ctx.moveTo(pts[split][0],pts[split][1]); ctx.lineTo(P[0],P[1]); ctx.stroke();
-      ctx.strokeStyle='#1a73e8'; ctx.lineWidth=7; ctx.beginPath(); ctx.moveTo(P[0],P[1]); for(let i=split+1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]); ctx.stroke(); }
-    else drawSeg(0,pts.length-1,'#1a73e8',7);
-    // maneuver dots
+    if (prog){ const split=prog.i; const P=imgToScreen(mToImg(prog.P));
+      ctx.strokeStyle='rgba(120,130,140,.9)'; ctx.lineWidth=7; ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]); for(let i=1;i<=split;i++) ctx.lineTo(pts[i][0],pts[i][1]); ctx.lineTo(P[0],P[1]); ctx.stroke();
+      ctx.strokeStyle='#1a73e8'; ctx.beginPath(); ctx.moveTo(P[0],P[1]); for(let i=split+1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]); ctx.stroke(); }
+    else { ctx.strokeStyle='#1a73e8'; ctx.lineWidth=7; ctx.beginPath(); pts.forEach((p,i)=> i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1])); ctx.stroke(); }
     ctx.fillStyle='#fff'; ctx.strokeStyle='#1a73e8'; ctx.lineWidth=3;
     route.steps.forEach(s=>{ if(s.type==='arrive'||s.type==='start') return; if(prog && s.at<prog.along) return; const q=imgToScreen(mToImg(s.pos)); ctx.beginPath(); ctx.arc(q[0],q[1],6,0,Math.PI*2); ctx.fill(); ctx.stroke(); });
   }
-  // destination pin
   if (dest){ const d=imgToScreen(mToImg(dest.finalM||dest.nodeM));
     ctx.fillStyle='#ffb547'; ctx.strokeStyle='#1a1206'; ctx.lineWidth=2.5; ctx.beginPath(); ctx.moveTo(d[0],d[1]); ctx.bezierCurveTo(d[0]-16,d[1]-22,d[0]-16,d[1]-40,d[0],d[1]-40); ctx.bezierCurveTo(d[0]+16,d[1]-40,d[0]+16,d[1]-22,d[0],d[1]); ctx.closePath(); ctx.fill(); ctx.stroke();
     ctx.fillStyle='#1a1206'; ctx.beginPath(); ctx.arc(d[0],d[1]-28,5,0,Math.PI*2); ctx.fill();
     ctx.font='700 15px '+getComputedStyle(document.body).fontFamily; ctx.textAlign='center'; ctx.lineWidth=4; ctx.strokeStyle='rgba(255,255,255,.9)'; ctx.strokeText(dest.label,d[0],d[1]-46); ctx.fillText(dest.label,d[0],d[1]-46); }
-  // user
-  if (uImg){ const s=imgToScreen(uImg); const accPx=Math.min(400,(pos.acc||30)/M_PER_PT*IMG_SCALE*view.s);
+  if (uImg){ const s=imgToScreen(uImg); const accM=est?Math.sqrt(est.var):(pos.acc||30); const accPx=Math.min(400,accM/M_PER_PT*IMG_SCALE*view.s);
     ctx.fillStyle='rgba(79,195,247,.18)'; ctx.beginPath(); ctx.arc(s[0],s[1],accPx,0,Math.PI*2); ctx.fill();
-    const eh=effectiveHeading(); if(eh){ ctx.save(); ctx.translate(s[0],s[1]); ctx.rotate(rad(eh.h)+view.rot); const g=ctx.createLinearGradient(0,0,0,-70); g.addColorStop(0,'rgba(79,195,247,.6)'); g.addColorStop(1,'rgba(79,195,247,0)'); ctx.fillStyle=g; ctx.beginPath(); ctx.moveTo(0,0); ctx.arc(0,0,70,-Math.PI/2-0.45,-Math.PI/2+0.45); ctx.closePath(); ctx.fill(); ctx.restore(); }
+    const f=facing(); if(f){ ctx.save(); ctx.translate(s[0],s[1]); ctx.rotate(rad(f.h)+view.rot); const g=ctx.createLinearGradient(0,0,0,-70); g.addColorStop(0,'rgba(79,195,247,.6)'); g.addColorStop(1,'rgba(79,195,247,0)'); ctx.fillStyle=g; ctx.beginPath(); ctx.moveTo(0,0); ctx.arc(0,0,70,-Math.PI/2-0.45,-Math.PI/2+0.45); ctx.closePath(); ctx.fill(); ctx.restore(); }
     ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(s[0],s[1],12,0,Math.PI*2); ctx.fill(); ctx.fillStyle='#4fc3f7'; ctx.beginPath(); ctx.arc(s[0],s[1],9,0,Math.PI*2); ctx.fill(); }
-  // north indicator when rotated
-  if (Math.abs(view.rot)>0.01){ const [W]=cssSize(); ctx.save(); ctx.translate(W-36, 96); ctx.rotate(view.rot); ctx.fillStyle='rgba(23,28,36,.9)'; ctx.beginPath(); ctx.arc(0,0,16,0,Math.PI*2); ctx.fill(); ctx.fillStyle='#ff7a59'; ctx.beginPath(); ctx.moveTo(0,-12); ctx.lineTo(6,4); ctx.lineTo(-6,4); ctx.closePath(); ctx.fill(); ctx.fillStyle='#fff'; ctx.font='700 9px '+getComputedStyle(document.body).fontFamily; ctx.textAlign='center'; ctx.fillText('N',0,12); ctx.restore(); }
+  if (Math.abs(view.rot)>0.01){ ctx.save(); ctx.translate(W-36, 96); ctx.rotate(view.rot); ctx.fillStyle='rgba(23,28,36,.9)'; ctx.beginPath(); ctx.arc(0,0,16,0,Math.PI*2); ctx.fill(); ctx.fillStyle='#ff7a59'; ctx.beginPath(); ctx.moveTo(0,-12); ctx.lineTo(6,4); ctx.lineTo(-6,4); ctx.closePath(); ctx.fill(); ctx.fillStyle='#fff'; ctx.font='700 9px '+getComputedStyle(document.body).fontFamily; ctx.textAlign='center'; ctx.fillText('N',0,12); ctx.restore(); }
 }
-function setFollow(f){ follow=f; $('recenter').hidden=f; if(f) drawMap(); }
+function setFollow(f){ follow=true; $('recenter').hidden=true; requestFrame(); }
 $('recenter').addEventListener('click',()=>setFollow(true));
-$('headTg').addEventListener('click',()=>{ headingUp=!headingUp; store.set('headingUp',headingUp); $('headTg').setAttribute('aria-pressed',String(headingUp)); $('headTg').classList.toggle('on',headingUp); drawMap(); });
+$('headTg').addEventListener('click',()=>{ headingUp=!headingUp; store.set('headingUp',headingUp); $('headTg').setAttribute('aria-pressed',String(headingUp)); $('headTg').classList.toggle('on',headingUp); if(!follow) setFollow(true); requestFrame(); });
 $('headTg').classList.toggle('on',headingUp);
-$('zIn').addEventListener('click',()=>{ view.s=Math.min(4,view.s*1.4); drawMap(); });
-$('zOut').addEventListener('click',()=>{ view.s=Math.max(0.15,view.s/1.4); drawMap(); });
-let ptrs=new Map(), lastDist=0, moved=false, downAt=0, followTimer=null;
-canvas.addEventListener('pointerdown',e=>{ canvas.setPointerCapture(e.pointerId); ptrs.set(e.pointerId,[e.clientX,e.clientY]); moved=false; downAt=Date.now(); if(ptrs.size===2){ const a=[...ptrs.values()]; lastDist=Math.hypot(a[0][0]-a[1][0],a[0][1]-a[1][1]); } });
-canvas.addEventListener('pointermove',e=>{
-  if(!ptrs.has(e.pointerId)) return; const prev=ptrs.get(e.pointerId); ptrs.set(e.pointerId,[e.clientX,e.clientY]);
-  if(ptrs.size===1){ const dx=e.clientX-prev[0], dy=e.clientY-prev[1]; if(Math.hypot(dx,dy)>3){ moved=true; if(follow){ view.rot=0; setFollow(false); } const c=Math.cos(-view.rot), s=Math.sin(-view.rot); view.cx-=(dx*c-dy*s)/view.s; view.cy-=(dx*s+dy*c)/view.s; drawMap(); } }
-  else if(ptrs.size===2){ const a=[...ptrs.values()]; const d=Math.hypot(a[0][0]-a[1][0],a[0][1]-a[1][1]); if(lastDist>0){ view.s=Math.min(4,Math.max(0.15,view.s*d/lastDist)); } lastDist=d; moved=true; drawMap(); }
-});
-function ptrUp(e){ ptrs.delete(e.pointerId); if(ptrs.size<2) lastDist=0;
-  if(!moved && Date.now()-downAt<400 && simulate && ptrs.size===0){ const r=canvas.getBoundingClientRect(); const ip=screenToImg([e.clientX-r.left,e.clientY-r.top]); const m=pdfToM(ip[0]/IMG_SCALE, ip[1]/IMG_SCALE); const ll=m2ll(m[0],m[1]); setGpsChip('ok','Simulated position'); setPos({lat:ll[0],lon:ll[1],acc:8,speed:0,course:null,ts:Date.now()}); }
-}
-canvas.addEventListener('pointerup',ptrUp); canvas.addEventListener('pointercancel',ptrUp);
-canvas.addEventListener('wheel',e=>{ e.preventDefault(); view.s=Math.min(4,Math.max(0.15,view.s*(e.deltaY<0?1.15:1/1.15))); drawMap(); },{passive:false});
-window.addEventListener('resize',()=>{ resizeMap(); drawMap(); });
-if('ResizeObserver' in window) new ResizeObserver(()=>{ if($('pane-nav').hidden) return; resizeMap(); drawMap(); }).observe(canvas.parentElement);
+$('zIn').addEventListener('click',()=>{ goal.s=Math.min(4,goal.s*1.4); requestFrame(); });
+$('zOut').addEventListener('click',()=>{ goal.s=Math.max(0.15,goal.s/1.4); requestFrame(); });
+// Map gestures are intentionally disabled for now: the map always follows you. The only pointer action is the
+// debug "simulate position" tap, which exists solely when that setting is on.
+canvas.addEventListener('pointerup',e=>{ if(!simulate) return; const r=canvas.getBoundingClientRect(); const ip=screenToImg([e.clientX-r.left,e.clientY-r.top]); const m=pdfToM(ip[0]/IMG_SCALE, ip[1]/IMG_SCALE); const ll=m2ll(m[0],m[1]); setGpsChip('ok','Simulated position'); setPos({lat:ll[0],lon:ll[1],acc:8,speed:0,course:null,ts:Date.now()}); });
+window.addEventListener('resize',()=>{ resizeMap(); requestFrame(); });
+if('ResizeObserver' in window) new ResizeObserver(()=>{ if($('pane-nav').hidden) return; resizeMap(); requestFrame(); }).observe(canvas.parentElement);
 
 // ---------- settings ----------
 function tg(id,val){ $(id).setAttribute('aria-checked',String(!!val)); }
@@ -655,7 +735,7 @@ tg('unitsTg',units==='ft'); tg('wakeTg',keepAwake); tg('simTg',simulate); tg('vo
 $('unitsTg').addEventListener('click',()=>{ units=units==='ft'?'m':'ft'; store.set('units',units); tg('unitsTg',units==='ft'); updateAll(); });
 $('voiceTg').addEventListener('click',()=>{ voiceOn=!voiceOn; store.set('voice',voiceOn); tg('voiceTg',voiceOn); if(voiceOn) say('Voice guidance on'); });
 $('wakeTg').addEventListener('click',()=>{ keepAwake=!keepAwake; store.set('wake',keepAwake); tg('wakeTg',keepAwake); if(keepAwake&&dest) requestWake(); else releaseWake(); });
-$('simTg').addEventListener('click',()=>{ simulate=!simulate; tg('simTg',simulate); $('simLegend').hidden=!simulate; if(simulate){ toast('Tap the map to place yourself'); $('navEmpty').hidden=true; showPane('nav'); setFollow(false); } else { pos=null; posM=null; setGpsChip('wait','Locating…'); startGeo(); } });
+$('simTg').addEventListener('click',()=>{ simulate=!simulate; tg('simTg',simulate); $('simLegend').hidden=!simulate; if(simulate){ toast('Tap the map to place yourself'); $('navEmpty').hidden=true; showPane('nav'); } else { pos=null; posM=null; setGpsChip('wait','Locating…'); startGeo(); } });
 $('aboutStats').textContent=`${Object.keys(DATA.rooms).length} rooms, ${Object.keys(DATA.landmarks).length} places and ${(EDGES.reduce((s,e)=>s+e[2],0)/1000).toFixed(1)} km of paths on this phone. Nothing is sent anywhere; home and pins stay in this browser.`;
 
 // ---------- wake lock ----------
@@ -665,10 +745,10 @@ function releaseWake(){ try{ if(wake){ wake.release(); wake=null; } }catch(e){} 
 document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible'&&keepAwake&&dest) requestWake(); });
 
 // ---------- boot ----------
-renderHome(); renderRecent(); renderCalib(); updateBanner(); updateArrow();
+renderHome(); renderRecent(); renderCalib(); renderBias(); updateBanner(); updateArrow();
 startGeo(); startOrientation();
 if (home && DATA.rooms[home]) $('roomInput').value=home;
-window.__bnn={DATA, roomPos, placePos, setDest, goRoom, showPane, buildRoute, snapToGraph, setPos, get route(){return route;}, get prog(){return prog;}, get pos(){return pos;}, setHeading(h){ heading=h; headingSrc='compass'; updateAll(); }};
+window.__bnn={DATA, roomPos, placePos, setDest, goRoom, showPane, buildRoute, snapToGraph, setPos, get route(){return route;}, get prog(){return prog;}, get pos(){return pos;}, setHeading(h){ compass.h=h; compass.ts=performance.now(); requestFrame(); }, get heading(){ return {displayHeading, displaySrc, compassBias}; }, tick(ms){ frame(ms===undefined?performance.now():ms); }, mToImg, get imgReady(){ return imgReady; }, get canvasSize(){ return [canvas.width, canvas.height, dpr]; }, get disp(){ return {dispM, dispProg, est}; }, get dbg(){ return {compass:{...compass}, target:targetHeading(), now:performance.now(), rafId, follow, view:{...view}, goal:{...goal}}; }};
 })();
 </script>
 </body>
