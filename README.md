@@ -2,7 +2,7 @@
 
 Walking directions to any room at The Boulders Resort & Spa (Scottsdale/Carefree, AZ), built from the resort's printed property map. Routes follow the resort's roads and footpaths, with turn-by-turn prompts, a map that turns to face your heading, voice guidance and automatic rerouting.
 
-Everything lives in one file: `index.html` (about 1.4 MB: map image, coordinates, path network and the ABC Diatype webfonts embedded). Styling follows the Runpod brand kit: purple `#5D29F0` on near-black, ABC Diatype, no borders. No server, no accounts, no tracking. Home room and GPS pins stay in the phone's browser storage.
+Everything lives in one file: `index.html` (about 1.6 MB, 0.5 MB over the wire: the resort map as vector SVG, coordinates, path network and the ABC Diatype webfonts embedded). Styling follows the Runpod brand kit: purple `#5D29F0` on near-black, ABC Diatype, no borders. No server, no accounts, no tracking. Home room and GPS pins stay in the phone's browser storage.
 
 ## Deploy
 
@@ -16,6 +16,7 @@ Open the Pages URL on your phone, then Share → Add to Home Screen so it opens 
 - **Pin this room here**: stand at your door and tap it. The app averages GPS for 6 seconds and ends every route to that room at the exact spot. Do it once in daylight.
 - **Navigate**: route on the resort map, instruction banner ("In 120 ft, turn left", then the following turn), remaining distance, minutes and arrival time. The map follows you heading-up; drag to look around and tap **Re-center** to resume. Voice prompts call out each turn.
 - **Arrow**: a big arrow pointing along the path to the next waypoint, with Compass (rotates with the phone) or North-up modes.
+- **Heading** comes from the phone's compass when it has one, otherwise from the gyroscope aligned to north by your GPS track while walking, otherwise from your direction of travel. iPhones ask for motion access on your first tap.
 - **Settings**: feet/metres, voice, keep-awake, and a *simulate position* mode (tap the map to place yourself) for testing indoors.
 
 ## Accuracy
@@ -25,7 +26,7 @@ Casita, hacienda and villa positions come from the illustrated map warped onto r
 ## Rebuild locally
 
 ```sh
-python3 build.py   # injects data/appdata.json and data/map200.jpg into src/index.template.html
+python3 build.py   # injects data/appdata.json, data/map.svg and data/fonts into src/index.template.html
 ```
 
 `data/appdata.json` holds every room's lat/lon, the forward/inverse lookup grids that convert between map pixels and coordinates, and the walking graph (3,275 nodes, 12.8 km of paths).
