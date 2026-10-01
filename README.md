@@ -2,7 +2,7 @@
 
 Walking directions to any room at The Boulders Resort & Spa (Scottsdale/Carefree, AZ), built from the resort's printed property map. Routes follow the resort's roads and footpaths, with turn-by-turn prompts, a map that turns to face your heading, voice guidance and automatic rerouting.
 
-Everything lives in one file: `index.html` (about 1.2 MB, map image, coordinates and path network embedded). No server, no accounts, no tracking. Home room and GPS pins stay in the phone's browser storage.
+Everything lives in one file: `index.html` (about 1.4 MB: map image, coordinates, path network and the ABC Diatype webfonts embedded). Styling follows the Runpod brand kit: purple `#5D29F0` on near-black, ABC Diatype, no borders. No server, no accounts, no tracking. Home room and GPS pins stay in the phone's browser storage.
 
 ## Deploy
 
