@@ -241,11 +241,6 @@ nav.tabs button[aria-selected="true"]{color:var(--fg)}
         <div class="setrow"><div class="lbl">Pinned rooms<small>Rooms whose position you corrected with GPS</small></div><button class="btn small" id="clearCalib">Clear all</button></div>
         <div class="calib-list" id="calibList"></div>
       </div>
-      <div class="card">
-        <h2>About</h2>
-        <p class="hint">Room positions and the walking network were extracted from the Boulders Resort property map and georeferenced against OpenStreetMap roads and surveyed landmarks. Compass accuracy depends on your phone: if the map spins or the arrow drifts, wave the phone in a figure‑eight.</p>
-        <p class="hint" id="aboutStats"></p>
-      </div>
     </div>
   </section>
 </main>
@@ -728,7 +723,6 @@ $('unitsTg').addEventListener('click',()=>{ units=units==='ft'?'m':'ft'; store.s
 $('voiceTg').addEventListener('click',()=>{ voiceOn=!voiceOn; store.set('voice',voiceOn); tg('voiceTg',voiceOn); if(voiceOn) say('Voice guidance on'); });
 $('wakeTg').addEventListener('click',()=>{ keepAwake=!keepAwake; store.set('wake',keepAwake); tg('wakeTg',keepAwake); if(keepAwake&&dest) requestWake(); else releaseWake(); });
 $('simTg').addEventListener('click',()=>{ simulate=!simulate; tg('simTg',simulate); $('simLegend').hidden=!simulate; if(simulate){ toast('Tap the map to place yourself'); $('navEmpty').hidden=true; showPane('nav'); } else { pos=null; posM=null; setGpsChip('wait','Locating…'); startGeo(); } });
-$('aboutStats').textContent=`${Object.keys(DATA.rooms).length} rooms, ${Object.keys(DATA.landmarks).length} places and ${(EDGES.reduce((s,e)=>s+e[2],0)/1000).toFixed(1)} km of paths on this phone. Nothing is sent anywhere; home and pins stay in this browser.`;
 
 // ---------- wake lock ----------
 let wake=null;
