@@ -61,7 +61,7 @@ select.sel{flex:1 1 200px;min-height:56px;border-radius:var(--r);background:var(
 /* Navigate */
 .navwrap{flex:1;position:relative;min-height:0;background:#efe6cf}
 #mapStage{position:absolute;inset:0;overflow:hidden;touch-action:none}
-#mapLayer{position:absolute;left:0;top:0;width:1008px;height:792px;transform-origin:0 0;will-change:transform}
+#mapLayer{position:absolute;left:0;top:0;transform-origin:0 0}
 #mapLayer svg{position:absolute;left:0;top:0;display:block;overflow:visible}
 #ovl text{font-family:var(--font)}
 #northInd{position:absolute;right:20px;top:calc(env(safe-area-inset-top,0px) + 112px);width:32px;height:32px;border-radius:50%;background:var(--bg);color:var(--lavender);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:500;pointer-events:none}
@@ -3197,10 +3197,17 @@ function animateView(dt){
 let routePdf=null, routeFor=null;
 function routePts(){ if (routeFor!==route){ routeFor=route; routePdf=route? route.pts.map(m=>mToPdf(m[0],m[1])) : null; } return routePdf; }
 const pathD = pts => pts.length ? 'M'+pts.map(p=>p[0].toFixed(1)+' '+p[1].toFixed(1)).join('L') : '';
+let rasterS=0;
+function setRaster(sc){ // size the SVGs so the browser rasterizes the vectors at this scale; runs once per zoom change
+  rasterS=sc; const w=(1008*sc).toFixed(2)+'px', h=(792*sc).toFixed(2)+'px';
+  for (const id of ['mapSvg','ovl']){ const el=$(id); el.style.width=w; el.style.height=h; }
+  layer.style.width=w; layer.style.height=h;
+}
 function drawMap(){
   if ($('pane-nav').hidden) return;
-  const [ax,ay]=anchor(); const rotDeg=deg(view.rot);
-  layer.style.transform=`translate(${ax}px,${ay}px) rotate(${view.rot}rad) scale(${view.s}) translate(${-view.cx}px,${-view.cy}px)`;
+  if (!rasterS || (Math.abs(goal.s-view.s)<0.002 && Math.abs(view.s-rasterS)>1e-6)) setRaster(view.s);   // re-raster only once zoom settles
+  const [ax,ay]=anchor(); const rotDeg=deg(view.rot); const k=view.s/rasterS;
+  layer.style.transform=`translate(${ax}px,${ay}px) rotate(${view.rot}rad) scale(${k}) translate(${(-view.cx*rasterS).toFixed(2)}px,${(-view.cy*rasterS).toFixed(2)}px)`;
   const inv=1/view.s;
   // route
   if (route){
@@ -3233,7 +3240,7 @@ function setFollow(f){ follow=true; $('recenter').hidden=true; requestFrame(); }
 $('recenter').addEventListener('click',()=>setFollow(true));
 $('headTg').addEventListener('click',()=>{ headingUp=!headingUp; store.set('headingUp',headingUp); $('headTg').setAttribute('aria-pressed',String(headingUp)); $('headTg').classList.toggle('on',headingUp); requestFrame(); });
 $('headTg').classList.toggle('on',headingUp);
-$('zIn').addEventListener('click',()=>{ goal.s=Math.min(10,goal.s*1.4); requestFrame(); });
+$('zIn').addEventListener('click',()=>{ goal.s=Math.min(7,goal.s*1.4); requestFrame(); });
 $('zOut').addEventListener('click',()=>{ goal.s=Math.max(0.4,goal.s/1.4); requestFrame(); });
 // Map gestures are intentionally disabled for now: the map always follows you. The only pointer action is the
 // debug "simulate position" tap, which exists solely when that setting is on.
