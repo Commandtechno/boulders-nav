@@ -109,6 +109,8 @@ canvas#mapc{position:absolute;inset:0;width:100%;height:100%;touch-action:none;d
 .setrow{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0}
 .setrow .lbl{font-size:16px;font-weight:500}
 .setrow .lbl small{display:block;color:var(--fg-2);font-size:13px;margin-top:3px;font-weight:400;line-height:1.4}
+.setrow-col{flex-direction:column;align-items:stretch;gap:10px}
+input.room.compact{font-size:22px;min-height:48px;padding:4px 14px;flex:1 1 120px}
 .toggle{width:52px;height:32px;border-radius:999px;background:var(--surface-3);position:relative;flex:none;transition:background .15s}
 .toggle::after{content:"";position:absolute;top:4px;left:4px;width:24px;height:24px;border-radius:50%;background:var(--fg-2);transition:left .15s,background .15s}
 .toggle[aria-checked="true"]{background:var(--fg)}
@@ -237,7 +239,8 @@ nav.tabs button[aria-selected="true"]{color:var(--fg)}
         <div class="setrow"><div class="lbl">Keep screen awake<small>While navigating</small></div><button class="toggle" id="wakeTg" role="switch" aria-checked="true" aria-label="Keep awake"></button></div>
         <div class="setrow"><div class="lbl">Simulate my position<small>Tap the map to place yourself. For testing indoors.</small></div><button class="toggle" id="simTg" role="switch" aria-checked="false" aria-label="Simulate"></button></div>
         <div class="setrow"><div class="lbl">Compass correction<small id="biasSmall"></small></div><button class="btn small" id="resetBias">Reset</button></div>
-        <div class="setrow"><div class="lbl">Home room<small id="homeSetSmall">Not set</small></div><button class="btn small" id="clearHome">Clear</button></div>
+        <div class="setrow setrow-col"><div class="lbl">Home room<small id="homeSetSmall">Not set</small></div>
+          <div class="row"><input class="room compact" id="homeInput" inputmode="numeric" pattern="[0-9]*" placeholder="Room #" aria-label="Home room number" autocomplete="off"><button class="btn small primary" id="homeSave">Save</button><button class="btn small" id="clearHome" hidden>Clear</button></div></div>
         <div class="setrow"><div class="lbl">Pinned rooms<small>Rooms whose position you corrected with GPS</small></div><button class="btn small" id="clearCalib">Clear all</button></div>
         <div class="calib-list" id="calibList"></div>
       </div>
@@ -392,7 +395,8 @@ function renderHome(){
   const has=!!home&&!!DATA.rooms[home];
   $('homeBtn').disabled=!has; $('homeBtn').textContent=has?`Take me home · ${home}`:'Take me home';
   $('homeHint').textContent=has?`Home is room ${home} (${roomArea(home)})${calib[home]?' · pinned with GPS':''}.`:'No home saved yet. Enter your room number, then tap “Save as home”.';
-  $('homeSetSmall').textContent=has?`Room ${home}`:'Not set';
+  $('homeSetSmall').textContent=has?`Room ${home} (${roomArea(home)})`:'Not set. Enter your room number below.';
+  $('homeInput').value=has?home:''; $('clearHome').hidden=!has;
 }
 function renderRecent(){ const box=$('recent'); box.innerHTML=''; recent.filter(r=>r!==home).slice(0,6).forEach(r=>{ const b=document.createElement('button'); b.className='pill'; b.textContent=r; b.addEventListener('click',()=>{ $('roomInput').value=r; goRoom(r); }); box.appendChild(b); }); }
 function renderCalib(){ const box=$('calibList'); box.innerHTML=''; const ks=Object.keys(calib); if(!ks.length){ box.textContent='None yet.'; return; } ks.sort().forEach(k=>{ const d=document.createElement('div'); const c=calib[k]; d.textContent=`Room ${k}: ±${Math.round(c[2])} m, ${new Date(c[3]).toLocaleString()}`; box.appendChild(d); }); }
@@ -420,6 +424,9 @@ $('placeGo').addEventListener('click',()=>{ const n=placeSel.value; const p=plac
 $('stopBtn').addEventListener('click',()=>{ dest=null; route=null; prog=null; speechSynthesis && speechSynthesis.cancel && speechSynthesis.cancel(); $('navEmpty').hidden=false; updateAll(); showPane('go'); releaseWake(); });
 $('toMapBtn').addEventListener('click',()=>showPane('nav'));
 $('clearHome').addEventListener('click',()=>{ home=null; store.del('home'); renderHome(); toast('Home cleared'); });
+function saveHomeFrom(v){ v=String(v||'').trim(); if(!v||!DATA.rooms[v]){ toast(v?`Room ${v} isn't on the map`:'Enter a room number'); return; } home=v; store.set('home',home); renderHome(); toast(`Home saved: room ${v}`); }
+$('homeSave').addEventListener('click',()=>saveHomeFrom($('homeInput').value));
+$('homeInput').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); saveHomeFrom(e.target.value); } });
 $('clearCalib').addEventListener('click',()=>{ calib={}; store.set('calib',calib); renderCalib(); renderHome(); toast('Pinned rooms cleared'); });
 $('resetBias').addEventListener('click',()=>{ compassBias=0; biasN=0; store.set('bias',0); store.set('biasN',0); renderBias(); toast('Compass correction reset'); });
 
