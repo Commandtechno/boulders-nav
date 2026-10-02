@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-EXPERIMENTAL, not applied to the shipped data: see README "Accuracy".
 """Stage 2 of the registration: pull the casita clusters onto the buildings seen in the aerial.
+EXPERIMENTAL, not applied to the shipped data: see README "Accuracy".
 
 tools/register.py fixes the roads. Between the roads the illustration is still schematic, so here the
 casita room boxes (rooms 2xx/3xx) are grouped into buildings, matched to white-roof blobs from the aerial

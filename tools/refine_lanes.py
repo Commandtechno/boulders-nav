@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-EXPERIMENTAL, not applied to the shipped data: see README "Accuracy".
 """Stage 2 of the registration: align the casita lanes and footpaths to the paths visible in the aerial.
+EXPERIMENTAL, not applied to the shipped data: see README "Accuracy".
 
 tools/register.py fixes the roads (asphalt). The pedestrian lanes between the casitas are drawn
 schematically, so here every lane stroke (tan5) and footpath (gray1) is ICP-matched to a skeleton of
