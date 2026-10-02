@@ -33,6 +33,9 @@ input[type=text]:focus{background:#2A2930}
 .lbl{background:rgba(6,4,13,.78);color:var(--fg);font-weight:600;font-size:12px;line-height:1;padding:3px 5px;border-radius:4px;white-space:nowrap;transform:translate(-50%,-50%);position:relative;left:0;top:0;font-variant-numeric:tabular-nums;cursor:grab}
 .lbl.moved{background:var(--yellow);color:#000}
 .lbl.lm{background:rgba(93,41,240,.85);font-weight:500}
+.pin{width:18px;height:18px;border-radius:50%;background:var(--yellow);box-shadow:0 0 0 3px rgba(0,0,0,.6);transform:translate(-50%,-50%);position:relative;cursor:grab}
+.pin.sel{background:#fff}
+.leaflet-container.warp{cursor:crosshair}
 .leaflet-tooltip{background:rgba(6,4,13,.88);color:var(--fg);border:0;box-shadow:none;font-size:12px;padding:4px 7px;border-radius:4px}
 .leaflet-tooltip::before{display:none}
 .leaflet-popup-content-wrapper{background:rgba(20,19,23,.96);color:var(--fg);border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,.5)}
@@ -51,7 +54,7 @@ input[type=text]:focus{background:#2A2930}
 <aside id="panel">
   <div>
     <h1>Boulders map check</h1>
-    <div class="sub">Every room, landmark and walking path the app knows, over Scottsdale's 2026 aerials (about 10 cm per pixel). Drag a room label to where the door really is, then copy the corrections.</div>
+    <div class="sub">Every room, landmark and walking path the app knows, over Scottsdale's 2026 aerials (about 10 cm per pixel). Puppet warp: switch on Edit, tap a path to pin it, drag the pin onto the real path and everything nearby follows. The resort drawing itself does not warp, only the paths and rooms. Copy the warp JSON when done.</div>
   </div>
   <div>
     <h2>Georeferencing</h2>
@@ -78,6 +81,18 @@ input[type=text]:focus{background:#2A2930}
     <label class="row"><input type="checkbox" id="lyLm" checked><span class="sw dot" style="background:var(--primary)"></span>Landmarks <span class="sub" id="nLm"></span></label>
     <label class="row"><input type="checkbox" id="lyLinks" checked><span class="sw" style="background:var(--yellow)"></span>Room to path links</label>
     <label class="row"><input type="checkbox" id="lyGrid"><span class="sw" style="background:var(--fg-3)"></span>Warp grid (12 pt cells)</label>
+  </div>
+  <div>
+    <h2>Puppet warp</h2>
+    <label class="row"><input type="checkbox" id="warpOn">Edit: tap to add a pin, drag it to warp</label>
+    <div class="sub">Radius <span id="radiusVal">50</span> m (new pins, or the selected pin)</div>
+    <input type="range" id="radius" min="10" max="250" value="50">
+    <div id="warpStatus" class="sub" style="margin-top:6px">No pins.</div>
+    <div class="btns" style="margin-top:8px">
+      <button class="btn" id="copyWarp">Copy warp JSON</button>
+      <button class="btn ghost" id="undoPin">Remove last pin</button>
+      <button class="btn ghost" id="clearWarp">Clear pins</button>
+    </div>
   </div>
   <div>
     <h2>Corrections</h2>
@@ -133,12 +148,13 @@ const canvas = L.canvas({ padding:0.5 });
 const edges = L.layerGroup(), nodes = L.layerGroup(), rooms = L.layerGroup(), lms = L.layerGroup(), links = L.layerGroup(), grid = L.layerGroup();
 let mapImg = L.layerGroup();
 const fixes = JSON.parse(localStorage.getItem('bnn-fixes') || '{}'), history = [];
-let roomMarkers = {}, linkLines = {}, nodeLL = [], roomNode = {}, placeNode = {};
+let roomMarkers = {}, linkLines = {}, nodeLL = [], nodeM0 = [], nodeMarkers = [], edgeLine = null, lmMarkers = {}, roomNode = {}, placeNode = {};
 function fmt(ll){ return `${ll[0].toFixed(6)}, ${ll[1].toFixed(6)}`; }
 function dist(a, b){ const A = ll2m(a[0],a[1]), B = ll2m(b[0],b[1]); return Math.hypot(A[0]-B[0], A[1]-B[1]); }
 function roomPopup(id){
   const orig = DATA.rooms[id], cur = roomMarkers[id].getLatLng(), moved = fixes[id];
-  return `<b>Room ${id}</b><br>app: ${fmt(orig)}<br>pdf: ${orig[2].toFixed(1)}, ${orig[3].toFixed(1)} pt<br>` +
+  const w = warpLL(orig[0], orig[1]);
+  return `<b>Room ${id}</b><br>app: ${fmt(orig)}<br>warped: ${fmt(w)}<br>pdf: ${orig[2].toFixed(1)}, ${orig[3].toFixed(1)} pt<br>` +
     (moved ? `moved to: ${fmt([cur.lat, cur.lng])}<br>shift: ${dist(orig, [cur.lat, cur.lng]).toFixed(1)} m<br>` : '') +
     `path node: ${roomNode[id]}<br><span style="color:rgba(204,198,223,.72)">drag the label to fix</span>`;
 }
@@ -160,12 +176,9 @@ function build(){
   mapImg = L.imageOverlay(MB.url, [[MB.south, MB.west], [MB.north, MB.east]], { opacity:$('opacity').value/100, interactive:false, zIndex:1 });
   if (wasOn || $('lyMap').checked) mapImg.addTo(map);
   layerToggles.lyMap = mapImg;
-  const G = DATA.graph; nodeLL = G.nodes.map(n => pdfToLL(n[0], n[1]));
-  G.edges.forEach(([a,b], i) => {
-    const len = Math.hypot(G.nodes[a][0]-G.nodes[b][0], G.nodes[a][1]-G.nodes[b][1]) * 1.03;
-    L.polyline([nodeLL[a], nodeLL[b]], { renderer:canvas, color:'#4FD1E8', weight:3, opacity:0.9 }).bindTooltip(`edge ${i}: node ${a} to ${b}, ${len.toFixed(0)} m`, { sticky:true }).addTo(edges);
-  });
-  nodeLL.forEach((ll, i) => L.circleMarker(ll, { renderer:canvas, radius:3, color:'#4FD1E8', weight:1, fillColor:'#06040D', fillOpacity:1 }).bindTooltip(`node ${i}  pdf ${G.nodes[i][0].toFixed(1)}, ${G.nodes[i][1].toFixed(1)}`, { sticky:true }).addTo(nodes));
+  const G = DATA.graph; nodeM0 = G.nodes.map(n => gridLookup(DATA.fwd, n[0], n[1])); nodeLL = nodeM0.map(m => m2ll(m[0], m[1]));
+  edgeLine = L.polyline(G.edges.map(([a,b]) => [nodeLL[a], nodeLL[b]]), { renderer:canvas, color:'#4FD1E8', weight:3, opacity:0.9 }).addTo(edges);
+  nodeMarkers = nodeLL.map((ll, i) => L.circleMarker(ll, { renderer:canvas, radius:3, color:'#4FD1E8', weight:1, fillColor:'#06040D', fillOpacity:1 }).bindTooltip(`node ${i}  pdf ${G.nodes[i][0].toFixed(1)}, ${G.nodes[i][1].toFixed(1)}`, { sticky:true }).addTo(nodes));
   $('nEdges').textContent = `${G.edges.length}`; $('nNodes').textContent = `${G.nodes.length}`;
   roomNode = Array.isArray(G.roomNode) ? Object.fromEntries(G.roomNode) : G.roomNode; placeNode = Array.isArray(G.placeNode) ? Object.fromEntries(G.placeNode) : G.placeNode;
   for (const [id, v] of Object.entries(DATA.rooms)){
@@ -178,14 +191,14 @@ function build(){
     roomMarkers[id] = mk; mk.addTo(rooms); setLink(id);
   }
   for (const [name, v] of Object.entries(DATA.landmarks)){
-    L.marker([v[0], v[1]], { icon:L.divIcon({ className:'', html:`<div class="lbl lm">${name}</div>`, iconSize:[0,0] }) })
+    lmMarkers[name] = L.marker([v[0], v[1]], { icon:L.divIcon({ className:'', html:`<div class="lbl lm">${name}</div>`, iconSize:[0,0] }) })
       .bindPopup(`<b>${name}</b><br>app: ${fmt(v)}<br>pdf: ${v[2].toFixed(1)}, ${v[3].toFixed(1)} pt<br>path node: ${placeNode[name]}`).addTo(lms);
     const n = placeNode[name]; if (n !== undefined) L.polyline([[v[0], v[1]], nodeLL[n]], { renderer:canvas, color:'#BBB6FD', weight:1.5, opacity:0.8, dashArray:'4 4' }).addTo(links);
   }
   $('nRooms').textContent = `${Object.keys(DATA.rooms).length}`; $('nLm').textContent = `${Object.keys(DATA.landmarks).length}`;
   for (let j = 0; j < DATA.fwd.ny; j++){ const row = []; for (let i = 0; i < DATA.fwd.nx; i++){ const [mx,my] = DATA.fwd.v[j*DATA.fwd.nx+i]; row.push(m2ll(mx,my)); } L.polyline(row, { renderer:canvas, color:'#fff', weight:0.6, opacity:0.35 }).addTo(grid); }
   for (let i = 0; i < DATA.fwd.nx; i++){ const col = []; for (let j = 0; j < DATA.fwd.ny; j++){ const [mx,my] = DATA.fwd.v[j*DATA.fwd.nx+i]; col.push(m2ll(mx,my)); } L.polyline(col, { renderer:canvas, color:'#fff', weight:0.6, opacity:0.35 }).addTo(grid); }
-  labelScale(); updateStatus();
+  labelScale(); updateStatus(); applyWarp();
 }
 const layerToggles = { lyMap:mapImg, lyEdges:edges, lyNodes:nodes, lyRooms:rooms, lyLm:lms, lyLinks:links, lyGrid:grid };
 for (const id of Object.keys(layerToggles)){
@@ -195,7 +208,57 @@ for (const id of Object.keys(layerToggles)){
 $('opacity').addEventListener('input', e => mapImg.setOpacity && mapImg.setOpacity(e.target.value/100));
 const style = document.createElement('style'); document.head.appendChild(style);
 function labelScale(){ const z = map.getZoom(); style.textContent = z < 17 ? '.lbl{font-size:0;padding:3px;border-radius:50%}.lbl:not(.lm){background:var(--red)}' : `.lbl{font-size:${z >= 19 ? 12 : 10}px}`; }
-map.on('zoomend', labelScale);
+map.on('zoomend', labelScale); map.doubleClickZoom.disable();
+
+// ---------- puppet warp: Gaussian radial displacements in the app's metre frame ----------
+let pins = [], selectedPin = null, warpRAF = 0;
+try { pins = (JSON.parse(localStorage.getItem('bnn-warp') || '[]')).map(p => ({ o:p.o, d:p.d, r:p.r })); } catch {}
+function disp(mx, my){
+  let sx = 0, sy = 0, sw = 0;
+  for (const p of pins){ const w = Math.exp(-((mx-p.o[0])**2 + (my-p.o[1])**2) / (2*p.r*p.r)); sx += w*p.d[0]; sy += w*p.d[1]; sw += w; }
+  if (!sw) return [0, 0]; const k = sw / (sw + 0.05);          // fade to zero far from every pin
+  return [sx/sw*k, sy/sw*k];
+}
+function warpM(m){ const d = disp(m[0], m[1]); return [m[0]+d[0], m[1]+d[1]]; }
+function warpLL(lat, lon){ const m = ll2m(lat, lon); return m2ll(...warpM(m)); }
+function applyWarp(){
+  if (!DATA) return;
+  const W = nodeM0.map(m => { const w = warpM(m); return m2ll(w[0], w[1]); });
+  nodeLL = W;
+  if (edgeLine) edgeLine.setLatLngs(DATA.graph.edges.map(([a,b]) => [W[a], W[b]]));
+  if (map.hasLayer(nodes)) nodeMarkers.forEach((mk, i) => mk.setLatLng(W[i]));
+  for (const [id, v] of Object.entries(DATA.rooms)){ if (!fixes[id]) roomMarkers[id].setLatLng(warpLL(v[0], v[1])); setLink(id); }
+  for (const [name, v] of Object.entries(DATA.landmarks)) lmMarkers[name].setLatLng(warpLL(v[0], v[1]));
+  for (const p of pins) if (p.marker){ p.marker.setLatLng(m2ll(p.o[0]+p.d[0], p.o[1]+p.d[1])); p.ring.setLatLng(m2ll(p.o[0]+p.d[0], p.o[1]+p.d[1])); p.ring.setRadius(p.r); p.line.setLatLngs([m2ll(p.o[0], p.o[1]), m2ll(p.o[0]+p.d[0], p.o[1]+p.d[1])]); }
+  const n = pins.length, moved = pins.filter(p => Math.hypot(...p.d) > 0.5).length;
+  $('warpStatus').textContent = n ? `${n} pin${n>1?'s':''}, ${moved} moved. Largest shift ${Math.max(0, ...pins.map(p => Math.hypot(...p.d))).toFixed(1)} m.` : 'No pins.';
+  try { localStorage.setItem('bnn-warp', JSON.stringify(pins.map(p => ({ o:p.o, d:p.d, r:p.r })))); } catch {}
+}
+function scheduleWarp(){ if (!warpRAF) warpRAF = requestAnimationFrame(() => { warpRAF = 0; applyWarp(); }); }
+const pinLayer = L.layerGroup().addTo(map);
+function selectPin(p){ for (const q of pins) q.marker && q.marker.getElement().firstChild.classList.toggle('sel', q === p); selectedPin = p; if (p){ $('radius').value = p.r; $('radiusVal').textContent = p.r; } }
+function makePin(p){
+  const at = m2ll(p.o[0]+p.d[0], p.o[1]+p.d[1]);
+  p.ring = L.circle(at, { radius:p.r, color:'#F4BD72', weight:1, opacity:0.6, fillOpacity:0.05, interactive:false }).addTo(pinLayer);
+  p.line = L.polyline([m2ll(p.o[0], p.o[1]), at], { color:'#F4BD72', weight:2, opacity:0.9, interactive:false }).addTo(pinLayer);
+  p.marker = L.marker(at, { draggable:true, icon:L.divIcon({ className:'', html:'<div class="pin"></div>', iconSize:[0,0] }), zIndexOffset:1000 }).addTo(pinLayer);
+  p.marker.on('dragstart click', () => selectPin(p));
+  p.marker.on('drag', e => { const m = ll2m(e.latlng.lat, e.latlng.lng); p.d = [m[0]-p.o[0], m[1]-p.o[1]]; scheduleWarp(); });
+  p.marker.on('dragend', applyWarp);
+  p.marker.on('dblclick', () => removePin(p));
+}
+function removePin(p){ for (const l of [p.marker, p.ring, p.line]) pinLayer.removeLayer(l); pins = pins.filter(q => q !== p); if (selectedPin === p) selectPin(null); applyWarp(); }
+for (const p of pins) makePin(p);
+$('warpOn').addEventListener('change', e => { map.getContainer().classList.toggle('warp', e.target.checked); if (!e.target.checked) selectPin(null); });
+$('radius').addEventListener('input', e => { const r = +e.target.value; $('radiusVal').textContent = r; if (selectedPin){ selectedPin.r = r; applyWarp(); } });
+$('undoPin').addEventListener('click', () => { const p = pins[pins.length-1]; if (p) removePin(p); });
+$('clearWarp').addEventListener('click', () => { for (const p of [...pins]) removePin(p); });
+$('copyWarp').addEventListener('click', async () => {
+  const out = { base: window.__verify ? __verify.version : null, pins: pins.map(p => ({ o:p.o.map(v => +v.toFixed(2)), d:p.d.map(v => +v.toFixed(2)), r:p.r })), rooms: fixes };
+  const txt = JSON.stringify(out);
+  try { await navigator.clipboard.writeText(txt); $('copyWarp').textContent = 'Copied'; } catch { prompt('Copy the warp:', txt); }
+  setTimeout(() => $('copyWarp').textContent = 'Copy warp JSON', 1500);
+});
 
 // ---------- versions ----------
 for (const v of VERSIONS){ const o = document.createElement('option'); o.value = v.id; o.textContent = v.label; $('version').appendChild(o); }
@@ -220,7 +283,9 @@ $('find').addEventListener('keydown', e => {
   if (lm){ const v = DATA.landmarks[lm]; map.flyTo([v[0], v[1]], 19); }
 });
 map.on('click', e => {
-  if (!DATA) return; const p = llToPdf(e.latlng.lat, e.latlng.lng), m = ll2m(e.latlng.lat, e.latlng.lng);
+  if (!DATA) return;
+  if ($('warpOn').checked){ const m = ll2m(e.latlng.lat, e.latlng.lng); const p = { o:m, d:[0,0], r:+$('radius').value }; pins.push(p); makePin(p); selectPin(p); applyWarp(); return; }
+  const p = llToPdf(e.latlng.lat, e.latlng.lng), m = ll2m(e.latlng.lat, e.latlng.lng);
   $('readout').textContent = `lat/lon ${fmt([e.latlng.lat, e.latlng.lng])}\npdf ${p[0].toFixed(1)}, ${p[1].toFixed(1)} pt\nlocal ${m[0].toFixed(1)}, ${m[1].toFixed(1)} m\nzoom ${map.getZoom()}`;
 });
 $('copy').addEventListener('click', async () => {
