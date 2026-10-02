@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Boulders map check</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+:root{--bg:#06040D;--surface:rgba(20,19,23,.92);--fg:#F3F0FA;--fg-2:rgba(204,198,223,.72);--fg-3:rgba(255,255,255,.34);--primary:#5D29F0;--lavender:#BBB6FD;--green:#76B971;--red:#D45453;--yellow:#F4BD72;--cyan:#4FD1E8}
+*{box-sizing:border-box;border:0;margin:0}
+html,body{height:100%;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,-apple-system,"Helvetica Neue",sans-serif;-webkit-font-smoothing:antialiased}
+#map{position:absolute;inset:0;background:#111}
+.leaflet-container{font:inherit}
+#panel{position:absolute;left:0;top:0;bottom:0;width:272px;max-width:82vw;background:var(--surface);backdrop-filter:blur(10px);padding:calc(14px + env(safe-area-inset-top,0px)) 16px 24px;overflow-y:auto;display:flex;flex-direction:column;gap:18px;z-index:1000;transition:transform .25s}
+#panel.hide{transform:translateX(-100%)}
+#toggle{position:absolute;left:0;top:calc(10px + env(safe-area-inset-top,0px));z-index:1001;background:var(--surface);color:var(--fg);padding:8px 12px;font-size:13px;cursor:pointer;transform:translateX(272px);transition:transform .25s}
+#panel.hide + #toggle{transform:none}
+h1{font-size:15px;font-weight:600;letter-spacing:.01em}
+h2{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--fg-3);margin-bottom:8px}
+label.row{display:flex;align-items:center;gap:10px;padding:5px 0;cursor:pointer;color:var(--fg)}
+label.row input{accent-color:var(--primary);width:16px;height:16px;margin:0}
+.sw{width:14px;height:3px;border-radius:2px;flex:none}
+.sw.dot{width:10px;height:10px;border-radius:50%}
+.sub{color:var(--fg-2);font-size:12px}
+input[type=range]{width:100%;accent-color:var(--primary)}
+input[type=text]{width:100%;background:#1D1C22;color:var(--fg);padding:9px 10px;font:inherit;border-radius:6px;outline:0}
+input[type=text]:focus{background:#2A2930}
+.btn{background:var(--fg);color:var(--bg);padding:8px 12px;font:inherit;font-weight:600;font-size:13px;border-radius:6px;cursor:pointer}
+.btn.ghost{background:#2A2930;color:var(--fg)}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+#readout{font-variant-numeric:tabular-nums;font-size:12px;color:var(--fg-2);white-space:pre-line}
+#status{font-size:12px;color:var(--fg-2)}
+/* markers */
+.lbl{background:rgba(6,4,13,.78);color:var(--fg);font-weight:600;font-size:12px;line-height:1;padding:3px 5px;border-radius:4px;white-space:nowrap;transform:translate(-50%,-50%);position:relative;left:0;top:0;font-variant-numeric:tabular-nums;cursor:grab}
+.lbl.moved{background:var(--yellow);color:#000}
+.lbl.lm{background:rgba(93,41,240,.85);font-weight:500}
+.lbl::after{content:"";position:absolute;left:50%;top:50%;width:6px;height:6px;margin:-3px;border-radius:50%;background:var(--red);opacity:0}
+.leaflet-tooltip{background:rgba(6,4,13,.88);color:var(--fg);border:0;box-shadow:none;font-size:12px;padding:4px 7px;border-radius:4px}
+.leaflet-tooltip::before{display:none}
+.leaflet-popup-content-wrapper{background:rgba(20,19,23,.96);color:var(--fg);border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,.5)}
+.leaflet-popup-tip{background:rgba(20,19,23,.96)}
+.leaflet-popup-content{margin:12px 14px;font:13px/1.5 system-ui,sans-serif;font-variant-numeric:tabular-nums}
+.leaflet-control-attribution{background:rgba(6,4,13,.6)!important;color:var(--fg-3)!important;font-size:10px}
+.leaflet-control-attribution a{color:var(--fg-2)!important}
+.leaflet-bar a{background:var(--surface);color:var(--fg);border-bottom:0}
+.leaflet-bar a:hover{background:#2A2930;color:var(--fg)}
+.leaflet-control-zoom{box-shadow:none}
+.leaflet-control-scale-line{background:rgba(6,4,13,.6);color:var(--fg);border:0;border-bottom:2px solid var(--fg)}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<aside id="panel">
+  <div>
+    <h1>Boulders map check</h1>
+    <div class="sub">Every room, landmark and walking path the app knows, over Scottsdale's 2026 aerials (about 10 cm per pixel). Drag a room label to where the door really is, then copy the corrections.</div>
+  </div>
+  <div>
+    <h2>Find</h2>
+    <input id="find" type="text" inputmode="numeric" placeholder="Room number or place" autocomplete="off">
+  </div>
+  <div>
+    <h2>Imagery</h2>
+    <label class="row"><input type="radio" name="base" value="s2026" checked>Scottsdale 2026 (10 cm)</label>
+    <label class="row"><input type="radio" name="base" value="esri">Esri World Imagery (50 cm, 2021)</label>
+    <label class="row"><input type="radio" name="base" value="none">None</label>
+  </div>
+  <div>
+    <h2>Layers</h2>
+    <label class="row"><input type="checkbox" id="lyMap" checked><span class="sw" style="background:#e8d9b5"></span>Resort map (warped)</label>
+    <input type="range" id="opacity" min="0" max="100" value="55">
+    <label class="row"><input type="checkbox" id="lyEdges" checked><span class="sw" style="background:var(--cyan)"></span>Walking paths <span class="sub" id="nEdges"></span></label>
+    <label class="row"><input type="checkbox" id="lyNodes"><span class="sw dot" style="background:var(--cyan)"></span>Path nodes <span class="sub" id="nNodes"></span></label>
+    <label class="row"><input type="checkbox" id="lyRooms" checked><span class="sw dot" style="background:var(--red)"></span>Rooms <span class="sub" id="nRooms"></span></label>
+    <label class="row"><input type="checkbox" id="lyLm" checked><span class="sw dot" style="background:var(--primary)"></span>Landmarks <span class="sub" id="nLm"></span></label>
+    <label class="row"><input type="checkbox" id="lyLinks" checked><span class="sw" style="background:var(--yellow)"></span>Room to path links</label>
+    <label class="row"><input type="checkbox" id="lyGrid"><span class="sw" style="background:var(--fg-3)"></span>Warp grid (12 pt cells)</label>
+  </div>
+  <div>
+    <h2>Corrections</h2>
+    <div id="status">No rooms moved yet.</div>
+    <div class="btns" style="margin-top:8px">
+      <button class="btn" id="copy">Copy JSON</button>
+      <button class="btn ghost" id="undo">Undo last</button>
+      <button class="btn ghost" id="reset">Reset all</button>
+    </div>
+  </div>
+  <div>
+    <h2>Cursor</h2>
+    <div id="readout">Tap the map for coordinates.</div>
+  </div>
+</aside>
+<button id="toggle">Layers</button>
+
+<script id="appdata" type="application/json">__APPDATA__</script>
+<script id="mapbounds" type="application/json">__MAPBOUNDS__</script>
+<script id="tilesinfo" type="application/json">__TILESINFO__</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const DATA = JSON.parse(document.getElementById('appdata').textContent);
+const MB = JSON.parse(document.getElementById('mapbounds').textContent);
+const $ = id => document.getElementById(id);
+
+// ---------- the app's own transforms, copied verbatim so the overlay shows exactly what the app computes ----------
+const m2ll = (mx,my) => [DATA.lat0 + my/DATA.k_lat, DATA.lon0 + mx/DATA.k_lon];
+const ll2m = (lat,lon) => [(lon-DATA.lon0)*DATA.k_lon, (lat-DATA.lat0)*DATA.k_lat];
+function gridLookup(g, x, y){
+  const fx=(x-g.x0)/g.step, fy=(y-g.y0)/g.step;
+  let i=Math.floor(fx), j=Math.floor(fy);
+  i=Math.min(Math.max(i,0),g.nx-2); j=Math.min(Math.max(j,0),g.ny-2);
+  const tx=fx-i, ty=fy-j, v=g.v, k=j*g.nx+i, a=v[k], b=v[k+1], c=v[k+g.nx], d=v[k+g.nx+1];
+  return [(1-tx)*(1-ty)*a[0]+tx*(1-ty)*b[0]+(1-tx)*ty*c[0]+tx*ty*d[0], (1-tx)*(1-ty)*a[1]+tx*(1-ty)*b[1]+(1-tx)*ty*c[1]+tx*ty*d[1]];
+}
+const pdfToLL = (x,y) => { const m = gridLookup(DATA.fwd, x, y); return m2ll(m[0], m[1]); };
+const llToPdf = (lat,lon) => { const m = ll2m(lat,lon); return gridLookup(DATA.inv, m[0], m[1]); };
+
+// ---------- map ----------
+const map = L.map('map', { preferCanvas:true, zoomControl:true, maxZoom:22, zoomSnap:0.5, attributionControl:true });
+L.control.scale({ imperial:true, metric:true }).addTo(map);
+
+// Scottsdale's 2026 aerials (10 cm) are cached as tiles by tools/fetch_aerials.py: the city's server renders
+// each request from MrSID in 10+ seconds, far too slow to stream live.
+const T = JSON.parse(document.getElementById('tilesinfo').textContent);
+const bases = {
+  s2026: L.tileLayer('tiles/{z}/{x}/{y}.jpg', { minNativeZoom:T.zmin, maxNativeZoom:T.zmax, maxZoom:22, bounds:[[T.south,T.west],[T.north,T.east]], attribution:`Aerials: City of Scottsdale ${T.year}` }),
+  esri: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom:22, maxNativeZoom:19, attribution:'Imagery: Esri, Vantor Vivid Advanced 2021' }),
+  none: L.layerGroup()
+};
+let base = bases.s2026.addTo(map);
+document.querySelectorAll('input[name=base]').forEach(r => r.addEventListener('change', () => { map.removeLayer(base); base = bases[r.value].addTo(map); if (base.bringToBack) base.bringToBack(); }));
+
+// ---------- overlays ----------
+const canvas = L.canvas({ padding:0.5 });
+const mapImg = L.imageOverlay('map.webp', [[MB.south, MB.west], [MB.north, MB.east]], { opacity:0.55, interactive:false, zIndex:1 });
+const edges = L.layerGroup(), nodes = L.layerGroup(), rooms = L.layerGroup(), lms = L.layerGroup(), links = L.layerGroup(), grid = L.layerGroup();
+
+const G = DATA.graph, nodeLL = G.nodes.map(n => pdfToLL(n[0], n[1]));
+G.edges.forEach(([a,b], i) => {
+  const len = Math.hypot(G.nodes[a][0]-G.nodes[b][0], G.nodes[a][1]-G.nodes[b][1]) * 1.03;
+  L.polyline([nodeLL[a], nodeLL[b]], { renderer:canvas, color:'#4FD1E8', weight:3, opacity:0.9 })
+    .bindTooltip(`edge ${i}: node ${a} to ${b}, ${len.toFixed(0)} m`, { sticky:true }).addTo(edges);
+});
+nodeLL.forEach((ll, i) => L.circleMarker(ll, { renderer:canvas, radius:3, color:'#4FD1E8', weight:1, fillColor:'#06040D', fillOpacity:1 })
+  .bindTooltip(`node ${i}  pdf ${G.nodes[i][0].toFixed(1)}, ${G.nodes[i][1].toFixed(1)}`, { sticky:true }).addTo(nodes));
+$('nEdges').textContent = `${G.edges.length}`; $('nNodes').textContent = `${G.nodes.length}`;
+
+// rooms: draggable labels; drag to correct, the yellow state marks a moved room
+const roomNode = Array.isArray(G.roomNode) ? Object.fromEntries(G.roomNode) : G.roomNode, placeNode = Array.isArray(G.placeNode) ? Object.fromEntries(G.placeNode) : G.placeNode;
+const fixes = JSON.parse(localStorage.getItem('bnn-fixes') || '{}'), history = [];
+const roomMarkers = {}, linkLines = {};
+function fmt(ll){ return `${ll[0].toFixed(6)}, ${ll[1].toFixed(6)}`; }
+function dist(a, b){ const A = ll2m(a[0],a[1]), B = ll2m(b[0],b[1]); return Math.hypot(A[0]-B[0], A[1]-B[1]); }
+function roomPopup(id){
+  const orig = DATA.rooms[id], cur = roomMarkers[id].getLatLng(), moved = fixes[id];
+  const pdf = llToPdf(cur.lat, cur.lng);
+  return `<b>Room ${id}</b><br>app: ${fmt(orig)}<br>pdf: ${orig[2].toFixed(1)}, ${orig[3].toFixed(1)} pt<br>` +
+    (moved ? `moved to: ${fmt([cur.lat, cur.lng])}<br>shift: ${dist(orig, [cur.lat, cur.lng]).toFixed(1)} m<br>` : '') +
+    `path node: ${roomNode[id]}<br><span style="color:rgba(204,198,223,.72)">drag the label to fix</span>`;
+}
+function setLink(id){
+  const n = roomNode[id]; if (n === undefined) return;
+  const ll = roomMarkers[id].getLatLng();
+  if (linkLines[id]) linkLines[id].setLatLngs([[ll.lat, ll.lng], nodeLL[n]]);
+  else linkLines[id] = L.polyline([[ll.lat, ll.lng], nodeLL[n]], { renderer:canvas, color:'#F4BD72', weight:1.5, opacity:0.8, dashArray:'4 4' }).addTo(links);
+}
+function updateStatus(){
+  const ids = Object.keys(fixes);
+  $('status').textContent = ids.length ? `${ids.length} room${ids.length>1?'s':''} moved: ${ids.sort().join(', ')}` : 'No rooms moved yet.';
+  localStorage.setItem('bnn-fixes', JSON.stringify(fixes));
+}
+for (const [id, v] of Object.entries(DATA.rooms)){
+  const ll = fixes[id] || [v[0], v[1]];
+  const mk = L.marker(ll, { draggable:true, icon:L.divIcon({ className:'', html:`<div class="lbl${fixes[id]?' moved':''}">${id}</div>`, iconSize:[0,0] }), zIndexOffset: 500 });
+  mk.on('dragstart', () => history.push([id, mk.getLatLng()]));
+  mk.on('drag', () => setLink(id));
+  mk.on('dragend', () => { const p = mk.getLatLng(); fixes[id] = [+p.lat.toFixed(6), +p.lng.toFixed(6)]; mk.getElement().firstChild.classList.add('moved'); updateStatus(); setLink(id); });
+  mk.bindPopup(() => roomPopup(id));
+  roomMarkers[id] = mk; mk.addTo(rooms); setLink(id);
+}
+for (const [name, v] of Object.entries(DATA.landmarks)){
+  L.marker([v[0], v[1]], { icon:L.divIcon({ className:'', html:`<div class="lbl lm">${name}</div>`, iconSize:[0,0] }) })
+    .bindPopup(`<b>${name}</b><br>app: ${fmt(v)}<br>pdf: ${v[2].toFixed(1)}, ${v[3].toFixed(1)} pt<br>path node: ${placeNode[name]}`).addTo(lms);
+  const n = placeNode[name]; if (n !== undefined) L.polyline([[v[0], v[1]], nodeLL[n]], { renderer:canvas, color:'#BBB6FD', weight:1.5, opacity:0.8, dashArray:'4 4' }).addTo(links);
+}
+$('nRooms').textContent = `${Object.keys(DATA.rooms).length}`; $('nLm').textContent = `${Object.keys(DATA.landmarks).length}`;
+
+// the forward warp grid, so distortion of the illustrated map is visible
+for (let j = 0; j < DATA.fwd.ny; j++){ const row = []; for (let i = 0; i < DATA.fwd.nx; i++){ const [mx,my] = DATA.fwd.v[j*DATA.fwd.nx+i]; row.push(m2ll(mx,my)); } L.polyline(row, { renderer:canvas, color:'#fff', weight:0.6, opacity:0.35 }).addTo(grid); }
+for (let i = 0; i < DATA.fwd.nx; i++){ const col = []; for (let j = 0; j < DATA.fwd.ny; j++){ const [mx,my] = DATA.fwd.v[j*DATA.fwd.nx+i]; col.push(m2ll(mx,my)); } L.polyline(col, { renderer:canvas, color:'#fff', weight:0.6, opacity:0.35 }).addTo(grid); }
+
+const layerToggles = { lyMap:mapImg, lyEdges:edges, lyNodes:nodes, lyRooms:rooms, lyLm:lms, lyLinks:links, lyGrid:grid };
+for (const [id, layer] of Object.entries(layerToggles)){
+  const cb = $(id); if (cb.checked) layer.addTo(map);
+  cb.addEventListener('change', () => cb.checked ? layer.addTo(map) : map.removeLayer(layer));
+}
+$('opacity').addEventListener('input', e => mapImg.setOpacity(e.target.value/100));
+// room labels are unreadable below zoom 17, show just a dot there
+const style = document.createElement('style'); document.head.appendChild(style);
+function labelScale(){ const z = map.getZoom(); style.textContent = z < 17 ? '.lbl{font-size:0;padding:3px;border-radius:50%}.lbl:not(.lm){background:var(--red)}' : `.lbl{font-size:${z >= 19 ? 12 : 10}px}`; }
+map.on('zoomend', labelScale);
+
+// ---------- fit, find, readout ----------
+const all = Object.values(DATA.rooms).map(v => [v[0], v[1]]).concat(Object.values(DATA.landmarks).map(v => [v[0], v[1]]));
+map.fitBounds(L.latLngBounds(all).pad(0.05)); labelScale();
+$('find').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return; const q = e.target.value.trim().toLowerCase();
+  if (roomMarkers[q]){ map.flyTo(roomMarkers[q].getLatLng(), 20); roomMarkers[q].openPopup(); return; }
+  const lm = Object.keys(DATA.landmarks).find(n => n.toLowerCase().includes(q));
+  if (lm){ const v = DATA.landmarks[lm]; map.flyTo([v[0], v[1]], 19); }
+});
+map.on('click', e => {
+  const p = llToPdf(e.latlng.lat, e.latlng.lng), m = ll2m(e.latlng.lat, e.latlng.lng);
+  $('readout').textContent = `lat/lon ${fmt([e.latlng.lat, e.latlng.lng])}\npdf ${p[0].toFixed(1)}, ${p[1].toFixed(1)} pt\nlocal ${m[0].toFixed(1)}, ${m[1].toFixed(1)} m\nzoom ${map.getZoom()}`;
+});
+$('copy').addEventListener('click', async () => {
+  const txt = JSON.stringify(fixes, null, 1);
+  try { await navigator.clipboard.writeText(txt); $('copy').textContent = 'Copied'; } catch { prompt('Copy the corrections:', txt); }
+  setTimeout(() => $('copy').textContent = 'Copy JSON', 1500);
+});
+$('undo').addEventListener('click', () => {
+  const last = history.pop(); if (!last) return; const [id, ll] = last;
+  roomMarkers[id].setLatLng(ll);
+  const orig = DATA.rooms[id]; if (Math.abs(ll.lat-orig[0]) < 1e-7 && Math.abs(ll.lng-orig[1]) < 1e-7){ delete fixes[id]; roomMarkers[id].getElement().firstChild.classList.remove('moved'); } else fixes[id] = [ll.lat, ll.lng];
+  setLink(id); updateStatus();
+});
+$('reset').addEventListener('click', () => {
+  for (const id of Object.keys(fixes)){ const v = DATA.rooms[id]; roomMarkers[id].setLatLng([v[0], v[1]]); roomMarkers[id].getElement().firstChild.classList.remove('moved'); setLink(id); }
+  for (const k of Object.keys(fixes)) delete fixes[k]; history.length = 0; updateStatus();
+});
+updateStatus();
+$('toggle').addEventListener('click', () => $('panel').classList.toggle('hide'));
+if (innerWidth < 640) $('panel').classList.add('hide');
+window.__verify = { map, fixes, DATA, pdfToLL, llToPdf, roomMarkers };
+</script>
+</body>
+</html>

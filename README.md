@@ -23,6 +23,17 @@ Open the Pages URL on your phone, then Share → Add to Home Screen so it opens 
 
 Casita, hacienda and villa positions come from the illustrated map warped onto real-world coordinates by matching its road network to OpenStreetMap. Typical error is 10–20 m, so expect to land within a building or two and then read the numbers on the doors; pinning your own room removes that error. Landmarks (Lodge, Golf Clubhouse, pools, ponds, tennis courts) were checked against surveyed coordinates.
 
+## Verifying the data
+
+`verify/` (published at `/verify/`) draws everything the app knows over the City of Scottsdale's 2026 aerial imagery (about 10 cm per pixel): the warped resort map with an opacity slider, all 217 rooms, 25 landmarks, the 3,332 walking-path edges and the links from each room to the path network. Drag a room label to its real door and **Copy JSON** to export corrections (also kept in the browser's storage). Tap anywhere for lat/lon and PDF-point coordinates. Esri World Imagery is available as a second basemap.
+
+Regenerate the overlays with the pipeline venv (PyMuPDF, numpy, Pillow):
+
+```sh
+python3 tools/warp_map.py          # verify/map.webp: the PDF warped onto Web Mercator through the app's inverse grid
+python3 tools/fetch_aerials.py     # verify/tiles: Scottsdale aerials cached as XYZ tiles (their server is too slow to stream)
+```
+
 ## Rebuild locally
 
 ```sh
