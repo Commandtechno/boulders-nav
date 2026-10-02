@@ -23,6 +23,7 @@ tiles = (root / "verify/tiles.json").read_text()      # from tools/fetch_aerials
 # georeferencing versions the page can switch between; each needs data/appdata.<id>.json and verify/map_<id>.webp
 # (tools/warp_map.py --data data/appdata.<id>.json --name map_<id>). The first entry is what the app ships.
 VERSIONS = [
+    {"id": "ffd", "label": "Aerial-aligned (paths + buildings)", "note": "Drawing deformed so lanes sit on paths detected in the 10 cm aerial, roads on asphalt, rooms on building footprints."},
     {"id": "affine", "label": "Raw: one affine transform", "note": "The drawing exactly as drawn, only rotated, scaled and placed. Landmarks miss by about 50 m."},
     {"id": "blend", "label": "Blend (original in casitas, roads elsewhere)", "note": "Original warp inside the casita areas, named-road warp for roads, villas and clubhouse."},
     {"id": "v1", "label": "Original warp (OSM roads near Lodge)", "note": "The first georeferencing: TPS fitted to OpenStreetMap roads, best near the Lodge."},

@@ -4,3 +4,5 @@ site/
 
 data/appdata.prev.json
 data/appdata.stage1.json
+data/appdata.prev.json
+data/aerial_paths.npz
