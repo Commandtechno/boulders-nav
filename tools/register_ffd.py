@@ -19,7 +19,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from aerial import root, m2ll, ll2m, LAT0, LON0, K_LAT, K_LON
 
 ap = argparse.ArgumentParser(); ap.add_argument("--iters", type=int, default=600); ap.add_argument("--spacing", type=float, default=24.0)
-ap.add_argument("--bend", type=float, default=0.1); ap.add_argument("--elastic", type=float, default=0.01); ap.add_argument("--base", default="data/appdata.blend.json"); ap.add_argument("--out", default="ffd"); args = ap.parse_args()
+ap.add_argument("--bend", type=float, default=0.1); ap.add_argument("--elastic", type=float, default=0.01); ap.add_argument("--base", default="data/appdata.blend.json"); ap.add_argument("--room-targets", default=None, help="appdata json whose room lat/lon are treated as exact targets"); ap.add_argument("--out", default="ffd"); ap.add_argument("--anchor-w", type=float, default=0.002); args = ap.parse_args()
 t0 = time.time()
 BASE = json.load(open(root / args.base)); rooms = BASE["rooms"]; landmarks = BASE["landmarks"]; roads = json.load(open(root / "data/roads_pdf.json"))
 A = np.load(root / "data/aerial_paths.npz"); dpath, droad, dbld = A["dpath"], A["droad"], A["dbld"]; tx0, ty0, ts, z = [int(v) for v in A["geo"]]; res = float(A["res"])
@@ -54,6 +54,11 @@ P = np.vstack(pts); FID = np.concatenate(fid); WT = np.concatenate(wts)
 anchors = [((157, 117), (-587.5, 305.3)), ((240, 426), (-390.6, 40.9)), ((370, 450), (-266.2, 12.4)), ((728, 580), (85.7, -164.0)), ((831, 303), (223.7, 213.9)),
            ((854, 297), (259.2, 235.9)), ((875, 365), (317.6, 111.8)), ((96, 74), (-705.7, 415.5)), ((273, 447), (-348.6, 25.9)), ((795, 330), (165.0, 180.0))]
 AP = np.array([a[0] for a in anchors], float); AM = np.array([a[1] for a in anchors], float)
+if args.room_targets:
+    RT = json.load(open(root / args.room_targets))["rooms"]
+    ids = [k for k in rnames if k in RT]
+    AP = np.vstack([AP, R[[rnames.index(k) for k in ids]]]); AM = np.vstack([AM, ll2m([RT[k][0] for k in ids], [RT[k][1] for k in ids])])
+    print(f"{len(ids)} room targets added as anchors")
 print(f"{len(P)} sample points: road {np.sum(FID == 0)}, path {np.sum(FID == 1)}, rooms {np.sum(FID == 2)}; {len(AP)} anchors")
 
 # ---------- torch model ----------
@@ -109,7 +114,7 @@ def run(model, iters, lr, bend, blur):
         M = BM + model.disp(Pt); d = sample_field(m2px_t(M), FIDt); d = d[use]
         data = (WTt[use] * torch.nn.functional.huber_loss(d, torch.zeros_like(d), delta=3.0, reduction="none")).sum() / WTt[use].sum()
         anc = ((ABM + model.disp(APt) - AMt) ** 2).sum(1).mean()
-        loss = data + 0.002 * anc + bend * model.bending() + args.elastic * model.elastic() + 50.0 * model.fold(base)
+        loss = data + args.anchor_w * anc + bend * model.bending() + args.elastic * model.elastic() + 50.0 * model.fold(base)
         loss.backward(); opt.step()
         if it % 100 == 0 or it == iters - 1: print(f"  it {it:4d} data {data.item():6.2f} med dist {d.median().item():4.1f} m anchors rms {anc.sqrt().item():5.1f} m bend {model.bending().item():.3f} fold {model.fold(base).item():.2f} ({time.time() - t0:.0f}s)")
     return model

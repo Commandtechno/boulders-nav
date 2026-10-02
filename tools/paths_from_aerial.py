@@ -29,6 +29,17 @@ for e in osm:
     t = e.get("tags", {}); g = e.get("geometry")
     if g and "building" in t and len(g) > 3:
         cv2.fillPoly(bld, [M.ll2px([q["lat"] for q in g], [q["lon"] for q in g]).astype(np.int32)], 1)
+# roofs the OSM footprints miss: locally bright (vs a 30 m background), flat, compact blobs of 45-3000 m2
+gray0 = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY).astype(np.float32); hsv0 = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+small = cv2.resize(gray0, (W // 2, H // 2), interpolation=cv2.INTER_AREA); bg = cv2.resize(cv2.GaussianBlur(small, (0, 0), 60), (W, H))
+mu0 = cv2.blur(gray0, (9, 9)); sd0 = np.sqrt(np.maximum(cv2.blur(gray0 * gray0, (9, 9)) - mu0 * mu0, 0))
+cand = ((gray0 - bg > 28) & (hsv0[..., 1] < 70) & (sd0 < 14)).astype(np.uint8); del mu0, sd0, bg, small
+k13 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13)); cand = cv2.morphologyEx(cv2.morphologyEx(cand, cv2.MORPH_OPEN, k13), cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21)))
+n, lab, stats, _ = cv2.connectedComponentsWithStats(cand, 8); area = stats[:, cv2.CC_STAT_AREA] * M.res ** 2
+fill = stats[:, cv2.CC_STAT_AREA] / np.maximum(stats[:, cv2.CC_STAT_WIDTH] * stats[:, cv2.CC_STAT_HEIGHT], 1)
+keep = (area > 45) & (area < 3000) & (fill > 0.3); keep[0] = False; roof = keep[lab].astype(np.uint8); del lab, cand
+print(f"roofs from aerial: {keep.sum()} blobs; OSM footprints {bld.mean():.2%}, roofs {roof.mean():.2%}")
+bld = np.maximum(bld, roof)
 bld_dil = cv2.dilate(bld, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (33, 33)))
 
 # asphalt (whole image at once: cheap)
