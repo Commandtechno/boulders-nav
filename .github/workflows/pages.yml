@@ -25,7 +25,7 @@ jobs:
       - name: Rebuild index.html from source and data
         run: python3 build.py
       - name: Stage only the app (keeps the PDF and source data off the public site)
-        run: mkdir -p site/verify && cp index.html site/index.html && cp verify/index.html verify/map.webp site/verify/ && cp -r verify/tiles site/verify/tiles
+        run: mkdir -p site/verify && cp index.html site/index.html && cp verify/index.html verify/map_*.webp verify/map_*_bounds.json verify/data_*.json site/verify/ && cp -r verify/tiles site/verify/tiles
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

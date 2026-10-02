@@ -14,9 +14,10 @@ root = pathlib.Path(__file__).resolve().parent.parent
 ap = argparse.ArgumentParser()
 ap.add_argument("--res", type=float, default=0.25, help="output ground resolution in metres/pixel (at the resort's latitude)")
 ap.add_argument("--scale", type=float, default=4.0, help="PDF rasterisation scale (points -> pixels)")
+ap.add_argument("--data", default="data/appdata.json"); ap.add_argument("--name", default="map")
 args = ap.parse_args()
 
-data = json.load(open(root / "data/appdata.json"))
+data = json.load(open(root / args.data))
 lat0, lon0, k_lat, k_lon = data["lat0"], data["lon0"], data["k_lat"], data["k_lon"]
 R = 6378137.0
 
@@ -77,7 +78,7 @@ for r0 in range(0, H, 256):
     out[r0:r1, :, 3] = np.where(inside, 255, 0)
 
 outdir = root / "verify"; outdir.mkdir(exist_ok=True)
-Image.fromarray(out, "RGBA").save(outdir / "map.webp", quality=82, method=6)
+Image.fromarray(out, "RGBA").save(outdir / f"{args.name}.webp", quality=82, method=6)
 json.dump({"south": float(lats.min()), "north": float(lats.max()), "west": float(lons.min()), "east": float(lons.max()),
-           "width": W, "height": H, "res_m": args.res}, open(outdir / "map_bounds.json", "w"), indent=1)
-print(f"wrote verify/map.webp ({(outdir / 'map.webp').stat().st_size / 1e6:.2f} MB) and verify/map_bounds.json")
+           "width": W, "height": H, "res_m": args.res}, open(outdir / f"{args.name}_bounds.json", "w"), indent=1)
+print(f"wrote verify/{args.name}.webp ({(outdir / f'{args.name}.webp').stat().st_size / 1e6:.2f} MB) and verify/{args.name}_bounds.json")

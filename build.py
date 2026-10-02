@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Assemble the single-file app: inject room/landmark data, the vector map (SVG) and the webfonts
 into src/index.template.html and write index.html."""
-import base64, json, pathlib, re
+import base64, json, pathlib, re, shutil
 
 root = pathlib.Path(__file__).parent
 tpl = (root / "src/index.template.html").read_text()
@@ -19,7 +19,17 @@ print(f"wrote index.html ({len(out)/1e6:.2f} MB), {len(data['rooms'])} rooms, {l
 
 # verification page (verify/index.html): the same data over aerial imagery; map.webp comes from tools/warp_map.py
 vtpl = (root / "src/verify.template.html").read_text()
-bounds = (root / "verify/map_bounds.json").read_text()
 tiles = (root / "verify/tiles.json").read_text()      # from tools/fetch_aerials.py
-(root / "verify/index.html").write_text(vtpl.replace("__APPDATA__", payload).replace("__MAPBOUNDS__", bounds).replace("__TILESINFO__", tiles))
-print("wrote verify/index.html")
+# georeferencing versions the page can switch between; each needs data/appdata.<id>.json and verify/map_<id>.webp
+# (tools/warp_map.py --data data/appdata.<id>.json --name map_<id>). The first entry is what the app ships.
+VERSIONS = [
+    {"id": "affine", "label": "Raw: one affine transform", "note": "The drawing exactly as drawn, only rotated, scaled and placed. Landmarks miss by about 50 m."},
+    {"id": "blend", "label": "Blend (original in casitas, roads elsewhere)", "note": "Original warp inside the casita areas, named-road warp for roads, villas and clubhouse."},
+    {"id": "v1", "label": "Original warp (OSM roads near Lodge)", "note": "The first georeferencing: TPS fitted to OpenStreetMap roads, best near the Lodge."},
+    {"id": "v2", "label": "Named-road warp", "note": "Each named road matched to the same road in OpenStreetMap. Roads within 2 m, casitas displaced."},
+]
+versions = [v for v in VERSIONS if (root / f"data/appdata.{v['id']}.json").exists() and (root / f"verify/map_{v['id']}.webp").exists()]
+for v in versions:
+    shutil.copy(root / f"data/appdata.{v['id']}.json", root / f"verify/data_{v['id']}.json")
+(root / "verify/index.html").write_text(vtpl.replace("__VERSIONS__", json.dumps(versions)).replace("__TILESINFO__", tiles))
+print(f"wrote verify/index.html with versions {[v['id'] for v in versions]}")
