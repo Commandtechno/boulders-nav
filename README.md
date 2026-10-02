@@ -21,7 +21,7 @@ Open the Pages URL on your phone, then Share → Add to Home Screen so it opens 
 
 ## Accuracy
 
-Casita, hacienda and villa positions come from the illustrated map warped onto real-world coordinates by matching its road network to OpenStreetMap. Typical error is 10–20 m, so expect to land within a building or two and then read the numbers on the doors; pinning your own room removes that error. Landmarks (Lodge, Golf Clubhouse, pools, ponds, tennis courts) were checked against surveyed coordinates.
+The illustrated map is schematic: parts of it sit 50–120 m from where they belong. It is warped onto real-world coordinates by `tools/register.py`, which matches every named road on the map to the same road in OpenStreetMap (checked against the City of Scottsdale's 10 cm aerials) and pins pools, lakes, the Lodge, the Clubhouse and road junctions. Roads and the walking graph on them are now within about 2 m (median) of the asphalt centrelines everywhere on the property. The pedestrian lanes between casitas follow the drawing and are typically within 5–10 m. Individual casita positions are the weak point: the drawing rearranges some casita groups, and no public source says which building carries which number, so expect to land within a building or two and read the door numbers. Pinning your own room (**Pin this room here**) removes that error for the room that matters. Verify or correct any room on the `/verify/` page.
 
 ## Verifying the data
 
